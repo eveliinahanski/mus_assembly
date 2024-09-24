@@ -1,0 +1,3651 @@
+---
+title: "R code for analysis in manuscript Early-life gut microbiota assembly patterns are conserved between laboratory and wild mice"
+output: html_notebook
+author: "Eveliina Hanski"
+date: "28/09/2024"
+---
+How many ASV could have a genus assigned to it in lab vs wild datasets?
+
+```{r taxa_assign_props}
+
+phy <- readRDS("phy.rds") 
+phy <- subset_taxa(phy, Genus!="Imtechella") # remove spike in taxa
+phy <- subset_taxa(phy, Genus!="Allobacillus")# remove spike in taxa
+
+wild <- subset_samples(phy, Source == "Wild")
+wild <- prune_taxa(taxa_sums(wild) > 0, wild)
+wild # 7226 taxa and 433 samples
+otu <- as.data.frame(otu_table(wild))
+otu <- otu %>% mutate_if(is.numeric, ~1 * (. > 0))
+counts <- as.list(rowSums(otu))
+range(counts) # 58 623 - that's the range of ASVs per sample in wild mouse data
+taxa <- as.data.frame(tax_table(wild))
+taxa_fam <- taxa[which(taxa$Family!="Other"),] # 6093 - so 84.3% of ASVs could be assigned to taxa at family level in wild mouse dataset
+taxa_gen <- taxa[which(taxa$Genus!="Other"),] # 3781 - so 52.3 of ASVs could be assigned to taxa at genus level in wild mouse dataset
+
+lab <- subset_samples(phy, Source == "Lab")
+lab <- prune_taxa(taxa_sums(lab) > 0, lab)
+lab # 1068 taxa and 39 samples
+otu <- as.data.frame(otu_table(lab))
+otu <- otu %>% mutate_if(is.numeric, ~1 * (. > 0))
+counts <- as.list(rowSums(otu))
+range(counts) # 7 306 - that's the range of ASVs per sample
+taxa <- as.data.frame(tax_table(lab))
+taxa_fam <- taxa[which(taxa$Family!="Other"),] # 960 - so 89.9% of ASVs could be assigned to taxa at family level in wild mouse dataset
+taxa_gen <- taxa[which(taxa$Genus!="Other"),] # 534 - so 50.0% of ASVs could be assigned to taxa at genus level in wild mouse dataset
+
+# How many ASVs out of all were assigned genus or family?
+phy <- prune_taxa(taxa_sums(phy) > 0, phy)
+taxa <- as.data.frame(tax_table(phy)) # 7821
+taxa_fam <- taxa[which(taxa$Family!="Other"),] # 6635 (84.8%)
+taxa_gen <- taxa[which(taxa$Genus!="Other"),] # 4074 (52.1%)
+
+```
+
+Do lab and wild mice have distinct gut microbiomes? Going to select 39 random samples from wild mouse data (one per ID), as there are 39 lab mouse samples and different samples sizes can affect e.g. PERMANOVA results and also make it hard to compare number of unique and shared ASVs in and across systems.
+
+```{r}
+
+age <- readRDS("phy.rds") 
+sd <- data.frame(sample_data(age))
+
+lab <- sd[which(sd$Source=="Lab"),]
+table(lab$Sex, lab$chrono_age) # range 7-124d
+summary(lab$chrono_age)
+#  Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#  7.00   18.50   23.00   39.18   41.00  124.00 
+
+# Taking a random cross-sectional subset, 39 samples per system:
+M <- data.frame(sample_data(age))
+M$seq_ID <- rownames(M)
+M$Animal_ID[M$Animal_ID==0] <- NA
+M$Animal_ID <- ifelse(is.na(M$Animal_ID), M$trapdate, M$Animal_ID)
+unique(M$Animal_ID) # 276 unique; 39 lab and the rest are wild
+M <- M[which(M$Animal_ID!="SK0"),]
+M <- M[which(M$Animal_ID!="61?"),]
+set.seed(4638)
+M1 <- M %>% group_by(Animal_ID) %>% sample_n(1) # one sample per id
+lab <- M1[which(M1$Source=="Lab"),] # 39
+unique(lab$trapdate) # 39
+wild <- M1[which(M1$Source=="Wild"),] # 230
+wild <- wild %>% group_by(Source) %>% sample_n(size = 39) # 39
+unique(wild$trapdate) # 39
+M1 <- rbind(lab, wild) # 78
+unique(M1$trapdate) # 78
+
+M1 <- as.data.frame(M1)
+rownames(M1) <- M1$seq_ID
+M1_phy <- phyloseq(sample_data(M1), otu_table(otu_table(age)), tax_table(tax_table(age)), phy_tree(phy_tree(age))) # 78 samples
+M1_phy <- prune_taxa(taxa_sums(M1_phy) > 0, M1_phy) # 3183 taxa
+
+age <- M1_phy
+
+# Save source data
+source <- age
+df <- data.frame(sample_data(source))
+df <- df[,c("Source", "read_count", "Shannon_asy", "Richness_asy", "IMR_code")]
+rownames(df) <- df$IMR_code
+sample_data(source) <- df
+saveRDS(source, "Source_data_Assembly_FIG1.rds")
+
+# PCoA
+
+genus <- tax_glom(age, taxrank = "Genus")
+family <- tax_glom(age, taxrank = "Family")
+class <- tax_glom(age, taxrank = "Class")
+phylum <- tax_glom(age, taxrank = "Phylum")
+
+ord <- ordinate(age, "PCoA", "jaccard")
+plot <- plot_ordination(age, ord, color="Source") +
+                geom_point(size = 5, alpha=.7, stroke=0) +
+  scale_color_manual(values=c("#69A2B0", "#69A56B")) +
+  theme_classic() + 
+  labs(title = "Jaccard",
+       x = "PCo1 (13.5%)",
+       y = "PCo2 (8.8%)",
+       color = "") +
+  theme(axis.text = element_text(size=20),
+        title = element_text(size=30),
+        legend.text = element_text(size = 5),
+        legend.position = "none")  +
+  stat_ellipse(type = "norm", linetype = 2)
+ggsave("Wild_Lab_Jaccard.png")
+
+age_clr <- microbiome::transform(age, "clr") # For Aitchison only
+ord <- ordinate(age_clr, "PCoA", "euclidean")
+aitchi <- plot_ordination(age, ord, color="Source") +
+                geom_point(size = 5, alpha=.7, stroke=0) +
+  scale_color_manual(values=c("#69A2B0", "#69A56B")) +
+  theme_classic() + 
+  labs(title = "Aitchison",
+       x = "PCo1 (20.5%)",
+       y = "PCo2 (2.5%)",
+       color = "") +
+  theme(axis.text = element_text(size=20),
+        title = element_text(size=30),
+        legend.text = element_text(size = 5),
+        legend.position = "none")  +
+  stat_ellipse(type = "norm", linetype = 2)
+ggsave("Wild_Lab_Aitchi.png")
+
+ord <- ordinate(age, "PCoA", "wunifrac")
+wuni <- plot_ordination(age, ord, color="Source") +
+                geom_point(size = 5, alpha=.7, stroke=0) +
+  scale_color_manual(values=c("#69A2B0", "#69A56B")) +
+  theme_classic() + 
+  labs(title = "Weighted UniFrac",
+       x = "PCo1 (33.6%)",
+       y = "PCo2 (23.0%)",
+       color = "") +
+  theme(axis.text = element_text(size=20),
+        title = element_text(size=30),
+        legend.text = element_text(size = 5),
+        legend.position = "none")  +
+  stat_ellipse(type = "norm", linetype = 2)
+ggsave("Wild_Lab_wUnifrac.png")
+
+ord <- ordinate(age, "PCoA", "unifrac")
+uni <- plot_ordination(age, ord, color="Source") +
+                geom_point(size = 5, alpha=.7, stroke=0) +
+  scale_color_manual(values=c("#69A2B0", "#69A56B")) +
+  theme_classic() + 
+  labs(title = "Unweighted UniFrac",
+             x = "PCo1 (22.7%)",
+       y = "PCo2 (19.6%)",
+       color = "") +
+  theme(axis.text = element_text(size=20),
+        title = element_text(size=30),
+        legend.text = element_text(size = 5),
+        legend.position = "none")  +
+  stat_ellipse(type = "norm", linetype = 2)
+ggsave("Wild_Lab_Unifrac.png")
+
+age_clr <- microbiome::transform(genus, "clr") # For Aitchison only
+ord <- ordinate(age_clr, "PCoA", "euclidean")
+aitchi <- plot_ordination(age, ord, color="Source") +
+                geom_point(size = 5, alpha=.7, stroke=0) +
+  scale_color_manual(values=c("#69A2B0", "#69A56B")) +
+  theme_classic() + 
+  labs(title = "Aitchison, genus",
+       x = "PCo1 (20.1%)",
+       y = "PCo2 (16.2%)",
+       color = "") +
+  theme(axis.text = element_text(size=20),
+        title = element_text(size=30),
+        legend.text = element_text(size = 5),
+        legend.position = "none")  +
+  stat_ellipse(type = "norm", linetype = 2)
+ggsave("Wild_Lab_AitchiG.png")
+
+age_clr <- microbiome::transform(family, "clr") # For Aitchison only
+ord <- ordinate(age_clr, "PCoA", "euclidean")
+aitchi <- plot_ordination(age, ord, color="Source") +
+                geom_point(size = 5, alpha=.7, stroke=0) +
+  scale_color_manual(values=c("#69A2B0", "#69A56B")) +
+  theme_classic() + 
+  labs(title = "Aitchison, family",
+       x = "PCo1 (22.8%)",
+       y = "PCo2 (19.3%)",
+       color = "") +
+  theme(axis.text = element_text(size=20),
+        title = element_text(size=30),
+        legend.text = element_text(size = 5),
+        legend.position = "none")  +
+  stat_ellipse(type = "norm", linetype = 2)
+ggsave("Wild_Lab_AitchiF.png")
+
+age_clr <- microbiome::transform(phylum, "clr") # For Aitchison only
+ord <- ordinate(age_clr, "PCoA", "euclidean")
+aitchi <- plot_ordination(age, ord, color="Source") +
+                geom_point(size = 5, alpha=.7, stroke=0) +
+  scale_color_manual(values=c("#69A2B0", "#69A56B")) +
+  theme_classic() + 
+  labs(title = "Aitchison, phylum",
+       x = "PCo1 (35.2%)",
+       y = "PCo2 (26.0%)",
+       color = "") +
+  theme(axis.text = element_text(size=20),
+        title = element_text(size=30),
+        legend.text = element_text(size = 5),
+        legend.position = "none")  +
+  stat_ellipse(type = "norm", linetype = 2)
+ggsave("Wild_Lab_AitchiP.png")
+
+### PERMANOVA
+
+# Jaccard
+M4 <- data.frame(sample_data(age))
+head(M4)
+lab_readcounts <- read.csv("lab_readcounts.csv") # Need to add lab readcounts as for some reason they are not here
+M4$Sample_ID <- rownames(M4)
+M4 <- merge(M4, lab_readcounts, by="Sample_ID", all.x=TRUE, all.y=FALSE)
+M4$read_count.x <- ifelse(is.na(M4$read_count.x), M4$read_count.y, M4$read_count.x)
+M4$Source <- as.factor(M4$Source)
+
+lab <- M4[which(M4$Source=="Lab"),]
+wild <- M4[which(M4$Source=="Wild"),]
+M4 <- rbind(lab, wild)
+
+sample_data(age)$Sample_ID <- rownames(sample_data(age))
+sample <- subset_samples(age, Sample_ID%in%M4$Sample_ID)
+D <- phyloseq::distance(sample, method = "jaccard", type = "samples")
+
+adonis2(D ~ M4$read_count.x  + # cannot control for other technical variables (extraction batch, library prep plate, seq batch as samples were not processed together but in different batches.)
+          M4$Source, na.rm=TRUE,
+        by="margin")
+
+beta <- betadisper(D, M4$Source)
+permutest(beta) 
+
+# Aitchison
+age_clr <- microbiome::transform(sample, "clr")
+D <- phyloseq::distance(age_clr, method = "euclidean", type = "samples")
+
+adonis2(D ~ M4$read_count.x  + 
+          M4$Source, na.rm=TRUE,
+        by="margin")
+
+beta <- betadisper(D, M4$Source)
+permutest(beta) 
+
+# Taxa barplots
+library(microbiome)
+library(dplyr)
+library(hrbrthemes)
+library(gcookbook)
+library(tidyverse)
+
+library(RColorBrewer)
+nb.cols <- 31
+mycolors <- colorRampPalette(brewer.pal(8, "Set3"))(nb.cols)
+set.seed(1) #
+mixed <- sample(mycolors)
+
+pseq <- age %>%
+  aggregate_taxa(level = "Phylum") 
+pseq <- aggregate_rare(pseq, level = "Phylum", detection = 1/100, prevalence = 5/100)
+phyla <- plot_composition(pseq,
+                      average_by = "Source",
+                      otu.sort = "abundance") +
+  scale_fill_manual(values=mixed, name="Phylum") +
+  theme_minimal() +
+  guides(fill = guide_legend(ncol = 1)) + 
+  labs(x = "", y = "Relative abundance (%)",
+       title = "", fill = "Phylum") +
+  theme(axis.text.x = element_text(size=30),
+        legend.text = element_text(size=15),
+        legend.title = element_text(size=20),
+        axis.text.y = element_text(size=25),
+        axis.title.y = element_text(size=30),
+        text=element_text(size=20),
+        plot.title=element_text(hjust=0.5))
+
+pseq <- age %>%
+  aggregate_taxa(level = "Family") 
+pseq <- aggregate_rare(pseq, level = "Family", detection = 1/100, prevalence = 5/100)
+families <- plot_composition(pseq,
+                      average_by = "Source",
+                      otu.sort = "abundance") +
+  scale_fill_manual(values=mixed, name="Family") +
+  theme_minimal() +
+  guides(fill = guide_legend(ncol = 1)) + 
+  labs(x = "", y = "Relative abundance (%)",
+       title = "", fill = "Family") +
+  theme(axis.text.x = element_text(size=30),
+        legend.text = element_text(size=15),
+        legend.title = element_text(size=20),
+        axis.text.y = element_text(size=25),
+        axis.title.y = element_text(size=30),
+        text=element_text(size=20),
+        plot.title=element_text(hjust=0.5))
+
+pseq <- age %>%
+  aggregate_taxa(level = "Genus") 
+pseq <- aggregate_rare(pseq, level = "Genus", detection = 1/100, prevalence = 5/100)
+genera <- plot_composition(pseq,
+                      average_by = "Source",
+                      otu.sort = "abundance") +
+  scale_fill_manual(values=mixed, name="Genus") +
+  theme_minimal() +
+  guides(fill = guide_legend(ncol = 1)) + 
+  labs(x = "", y = "Relative abundance (%)",
+       title = "", fill = "Genus") +
+  theme(axis.text.x = element_text(size=30),
+        legend.text = element_text(size=15),
+        legend.title = element_text(size=20),
+        axis.text.y = element_text(size=25),
+        axis.title.y = element_text(size=30),
+        text=element_text(size=20),
+        plot.title=element_text(hjust=0.5))
+
+# Alpha diversity
+sd <- data.frame(sample_data(age))
+
+plot <- ggplot(data = sd, aes(x = Source, y = Richness_asy, fill = Source)) +
+     scale_fill_manual(values=c("#69A2B0", "#69A56B")) +
+     geom_violin(alpha=0.4, position = position_dodge(width = .75),size=1,color="black") +
+     geom_boxplot(notch = TRUE,  outlier.size = -1, color="black",lwd=1.2, alpha = 0.6)+
+     geom_point( shape = 21,size=4, stroke=0.1,position = position_jitterdodge(), color="black",alpha=.8)+
+     #theme_pubr()+
+      theme_minimal()  + 
+  ylab(  c("Asymptotic ASV richness")  )  +
+     theme(axis.ticks = element_line(size=2,color="black"),
+           axis.ticks.length=unit(0.2,"cm"),
+           axis.text.x = element_text(size=20),
+           axis.text.y = element_text(size=20),
+           axis.title.y = element_text(size=20),
+           legend.position = "none")
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("Wild_Lab_ASVrich.png", width=5, height=5)
+
+plot <- ggplot(data = sd, aes(x = Source, y = Shannon_asy, fill = Source)) +
+     scale_fill_manual(values=c("#69A2B0", "#69A56B")) +
+     geom_violin(alpha=0.4, position = position_dodge(width = .75),size=1,color="black") +
+     geom_boxplot(notch = TRUE,  outlier.size = -1, color="black",lwd=1.2, alpha = 0.6)+
+     geom_point( shape = 21,size=4, stroke=0.1,position = position_jitterdodge(), color="black",alpha=.8)+
+     #theme_pubr()+
+      theme_minimal()  + 
+  ylab(  c("Asymptotic Shannon diversity")  )  +
+     theme(axis.ticks = element_line(size=2,color="black"),
+           axis.ticks.length=unit(0.2,"cm"),
+           axis.text.x = element_text(size=20),
+           axis.text.y = element_text(size=20),
+           axis.title.y = element_text(size=20),
+           legend.position = "none")
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("Wild_Lab_Shannon.png", width=5, height=5)
+
+# Is alpha diversity significantly higher in wild mice than in lab mice?
+wilcox.test(Richness_asy ~ Source, data = sd, alternative = "two.sided") # W = 329.5, p-value = 1.691e-05
+wilcox.test(Shannon_asy ~ Source, data = sd, alternative = "two.sided") # W = 487, p-value = 0.005905
+
+# --> Yes, both asymptotic ASV richness and Shannon diversity are significantly higher in wild mice.
+
+# Is alpha diversity significantly higher in wild mice even when only including mice >20g body mass so presumably adult mice?
+maxi <- sd[which(sd$Body_mass_g>20),]
+table(maxi$Source) # 10 lab, 11 wild
+wilcox.test(Richness_asy ~ Source, data = maxi, alternative = "two.sided") # W = 21, p-value = 0.01587
+wilcox.test(Shannon_asy ~ Source, data = maxi, alternative = "two.sided") # W = 46, p-value = 0.5573
+
+# --> Yes, but only when considering observed richness rather than Shannon. Let's plot those.
+
+plot <- ggplot(data = maxi, aes(x = Source, y = Richness_asy, fill = Source)) +
+     scale_fill_manual(values=c("#69A2B0", "#69A56B")) +
+     geom_violin(alpha=0.4, position = position_dodge(width = .75),size=1,color="black") +
+     geom_boxplot(notch = TRUE,  outlier.size = -1, color="black",lwd=1.2, alpha = 0.6)+
+     geom_point( shape = 21,size=4, stroke=0.1,position = position_jitterdodge(), color="black",alpha=.8)+
+     #theme_pubr()+
+      theme_minimal()  + 
+  ylab(  c("Asymptotic ASV richness")  )  +
+     theme(axis.ticks = element_line(size=2,color="black"),
+           axis.ticks.length=unit(0.2,"cm"),
+           axis.text.x = element_text(size=20),
+           axis.text.y = element_text(size=20),
+           axis.title.y = element_text(size=20),
+           legend.position = "none")
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("Wild_Lab_ASVrich_ADULT.png", width=5, height=5)
+
+plot <- ggplot(data = maxi, aes(x = Source, y = Shannon_asy, fill = Source)) +
+     scale_fill_manual(values=c("#69A2B0", "#69A56B")) +
+     geom_violin(alpha=0.4, position = position_dodge(width = .75),size=1,color="black") +
+     geom_boxplot(notch = TRUE,  outlier.size = -1, color="black",lwd=1.2, alpha = 0.6)+
+     geom_point( shape = 21,size=4, stroke=0.1,position = position_jitterdodge(), color="black",alpha=.8)+
+     #theme_pubr()+
+      theme_minimal()  + 
+  ylab(  c("Asymptotic Shannon diversity")  )  +
+     theme(axis.ticks = element_line(size=2,color="black"),
+           axis.ticks.length=unit(0.2,"cm"),
+           axis.text.x = element_text(size=20),
+           axis.text.y = element_text(size=20),
+           axis.title.y = element_text(size=20),
+           legend.position = "none")
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("Wild_Lab_Shannon_ADULT.png", width=5, height=5)
+
+# Beta diversity - Jaccard dissimilariry in wild-wild, lab-lab and wild-lab
+
+library(vegan)
+library(phyloseq)
+
+age_clr <- microbiome::transform(age, "clr")
+D <- phyloseq::distance(age_clr, method = "euclidean", type = "samples")
+D <- as.matrix(D)
+D_melt <- melt(D)
+sd <- data.frame(sample_data(age))
+sd <- sd[,c("Source", "Animal_ID")]
+sd$Mouse <- rownames(sd)
+sd <- sd[,c("Source", "Animal_ID", "Mouse")]
+sd <- na.omit(sd)
+colnames(D_melt) <- c("mouse1", "mouse2", "BC_distance")
+distance <- merge(D_melt, sd, by.x="mouse1", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse1", "mouse2", "BC_distance", "mouse1_source", "mouse1_ID")
+distance <- merge(distance, sd, by.x="mouse2", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse2", "mouse1", "BC_distance", "mouse1_source", "mouse1_ID", "mouse2_source", "mouse2_ID")
+distance <- na.omit(distance)
+distance <- distance[distance$mouse1!=distance$mouse2, ] # removing self-comparisons
+distance <- distance[which(distance$mouse1_source=="Lab" | distance$mouse2_source=="Lab" | distance$mouse1_ID!=distance$mouse2_ID),] # further removing self-comparisons in wild mice 
+self <- distance[which(distance$mouse1_ID==distance$mouse2_ID),]
+unique(self$mouse1_ID) # "0" --> these are lab mice. only one sample per ID, so they didn't have IDs. so it is all good
+distance$pair[distance$mouse1_source=="Wild" & distance$mouse2_source=="Wild"] <- "W-W"
+distance$pair[distance$mouse1_source=="Lab" & distance$mouse2_source=="Wild"] <- "L-W"
+distance$pair[distance$mouse1_source=="Wild" & distance$mouse2_source=="Lab"] <- "L-W"
+distance$pair[distance$mouse1_source=="Lab" & distance$mouse2_source=="Lab"] <- "L-L"
+
+# Plotting
+  plot <- ggplot(data = distance, aes(x = pair, y = BC_distance, fill = pair)) +
+     scale_fill_manual(values=c("#69A2B0", "aquamarine4", "#69A56B")) +
+   geom_point( shape = 21,size=1, stroke=0.1,position = position_jitterdodge(), color="black",alpha=.5)+ 
+    geom_violin(alpha=0.4, position = position_dodge(width = .75),size=1,color="black") +
+     geom_boxplot(notch = TRUE,  outlier.size = -1, color="black",lwd=1.2, alpha = 0.6) +
+      theme_minimal()  + 
+  ylab(  c("Aitchison dissimilarity")  )  +
+     remove("legend.title")+
+     theme(axis.ticks = element_line(size=2,color="black"),
+           axis.ticks.length=unit(0.2,"cm"),
+           axis.text.x = element_text(size=40),
+           axis.text.y = element_text(size=25),
+           axis.title.y = element_text(size=35),
+           legend.position = "none") + scale_y_continuous(breaks = seq(0, 150, by = 25))
+ggsave("Wild_Lab_betadiv.png")
+
+# Test for difference
+lab_mixed <- distance[which(distance$pair=="L-L" | distance$pair=="L-W"),]
+lab_wild <- distance[which(distance$pair=="L-L" | distance$pair=="W-W"),]
+mixed_wild <- distance[which(distance$pair=="L-W" | distance$pair=="W-W"),]
+
+### lab-lab vs lab-wild
+u.obs<-wilcox.test(BC_distance ~ pair, data=lab_mixed)
+u.obs # W = 283236, p-value < 2.2e-16
+u.obs.stat <- u.obs$statistic
+
+#do permutation test
+Nperm<-1000
+perm1<-data.frame(permutation=1:Nperm, u.stat=NA)
+head(perm1) 
+
+lose<-"BC_distance"
+for (i in 1:Nperm) {
+  d<-lab_mixed[,!names(lab_mixed) %in% lose]
+  d$dist.rand<-sample(lab_mixed$BC_distance, length(lab_mixed$BC_distance), replace=F)
+  x<-wilcox.test(dist.rand ~ pair, data=d)
+  perm1$u.stat[i]<-x$statistic
+}
+
+head(perm1)
+hist(perm1$u.stat)
+abline(v=u.obs$statistic, col="red", lwd=2, lty=2)
+
+perm1$result<-ifelse(perm1$u.stat<u.obs$statistic, 1, 0)
+p<-mean(perm1$result)
+p # 0
+
+### lab-lab vs wild-wild
+u.obs<-wilcox.test(BC_distance ~ pair, data=lab_wild)
+u.obs # W = 146312, p-value < 2.2e-16
+u.obs.stat <- u.obs$statistic
+
+#do permutation test
+Nperm<-1000
+perm1<-data.frame(permutation=1:Nperm, u.stat=NA)
+head(perm1) 
+
+lose<-"BC_distance"
+for (i in 1:Nperm) {
+  d<-lab_wild[,!names(lab_wild) %in% lose]
+  d$dist.rand<-sample(lab_wild$BC_distance, length(lab_wild$BC_distance), replace=F)
+  x<-wilcox.test(dist.rand ~ pair, data=d)
+  perm1$u.stat[i]<-x$statistic
+}
+
+head(perm1)
+hist(perm1$u.stat)
+abline(v=u.obs$statistic, col="red", lwd=2, lty=2)
+
+perm1$result<-ifelse(perm1$u.stat<u.obs$statistic, 1, 0)
+p<-mean(perm1$result)
+p # 0
+
+### lab-wild vs wild-wild
+u.obs<-wilcox.test(BC_distance ~ pair, data=mixed_wild)
+u.obs # W = 2970452, p-value < 2.2e-16
+u.obs.stat <- u.obs$statistic
+
+#do permutation test
+Nperm<-1000
+perm1<-data.frame(permutation=1:Nperm, u.stat=NA)
+head(perm1) 
+
+lose<-"BC_distance"
+for (i in 1:Nperm) {
+  d<-mixed_wild[,!names(mixed_wild) %in% lose]
+  d$dist.rand<-sample(mixed_wild$BC_distance, length(mixed_wild$BC_distance), replace=F)
+  x<-wilcox.test(dist.rand ~ pair, data=d)
+  perm1$u.stat[i]<-x$statistic
+}
+
+head(perm1)
+hist(perm1$u.stat)
+abline(v=u.obs$statistic, col="red", lwd=2, lty=2)
+
+perm1$result<-ifelse(perm1$u.stat>u.obs$statistic, 1, 0)
+p<-mean(perm1$result)
+p # 0
+
+```
+
+How much of relative abundance do shared ASVs form in each system? Cross-sectional and same sample sized data, same as used above.
+
+```{r}
+
+age <- readRDS("phy.rds") # 8384 taxa and 513 samples
+
+# Taking a random cross-sectional subset
+M <- data.frame(sample_data(age))
+M$seq_ID <- rownames(M)
+M$Animal_ID[M$Animal_ID==0] <- NA
+M$Animal_ID <- ifelse(is.na(M$Animal_ID), M$trapdate, M$Animal_ID)
+unique(M$Animal_ID) # 276 unique; 39 lab and the rest are wild
+M <- M[which(M$Animal_ID!="SK0"),]
+M <- M[which(M$Animal_ID!="61?"),]
+set.seed(4638)
+M1 <- M %>% group_by(Animal_ID) %>% sample_n(1) # one sample per id
+lab <- M1[which(M1$Source=="Lab"),] # 39
+unique(lab$trapdate) # 39
+wild <- M1[which(M1$Source=="Wild"),] # 235
+wild <- wild %>% group_by(Source) %>% sample_n(size = 39) # 39
+unique(wild$trapdate) # 39
+M1 <- rbind(lab, wild) # 78
+unique(M1$trapdate) # 78
+
+M1 <- as.data.frame(M1)
+rownames(M1) <- M1$seq_ID
+M1_phy <- phyloseq(sample_data(M1), otu_table(otu_table(age)), tax_table(tax_table(age)), phy_tree(phy_tree(age))) # 78 samples
+M1_phy <- prune_taxa(taxa_sums(M1_phy) > 0, M1_phy) # 2920 taxa and 78 samples
+
+age <- M1_phy
+
+# Euler on shared and unique ASVs
+wild <- subset_samples(age, Source=="Wild")
+wild  <- prune_taxa(taxa_sums(wild) > 0, wild)
+wild_list <- taxa_names(wild)
+lab <- subset_samples(age, Source=="Lab")
+lab  <- prune_taxa(taxa_sums(lab) > 0, lab)
+lab_list <- taxa_names(lab)
+venn_list <- list(Wild=wild_list, Lab=lab_list) 
+library(eulerr)
+euler <- euler(venn_list)
+plot <- plot(euler,
+             fills=c("#69A56B", "#69A2B0", "cadetblue4"),
+             alpha=.6,
+             key=TRUE,
+             quantities=TRUE,
+             edges=FALSE,
+             fontsize=60,
+             size=60,
+             main="Unique and shared ASVs") # In this random cross-sec subset of the age data, 391 (18.5%) ASVs are found in both systems while 2115 (66.4%) are unique to wild and 677 (32.0%) to lab mice. There are 3183 taxa in total.
+
+#
+
+l <- subset_samples(age, Source=="Lab")
+l <- data.frame(t(otu_table(l)))
+l <- l %>% mutate_if(is.numeric, ~1 * (. > 0))
+ll <- colSums(l)
+mean(ll)
+
+l <- subset_samples(age, Source=="Wild")
+l <- data.frame(t(otu_table(l)))
+l <- l %>% mutate_if(is.numeric, ~1 * (. > 0))
+ll <- colSums(l)
+mean(ll)
+
+n_seqs <- seq(ntaxa(age))
+len_n_seqs <- nchar(max(n_seqs))
+#taxa_names(age) <- paste("Seq", formatC(n_seqs,  width = len_n_seqs, flag = "0"), sep = "_")
+age_PS <- age # 3183 taxa and 78 samples
+
+# Trimming to taxa that is detected (at any level in both systems)
+
+skok <- subset_samples(age, Source=="Wild")
+skok  <- prune_taxa(taxa_sums(skok) > 0, skok)
+skok_list <- taxa_names(skok)
+length(skok_list) # 2506
+
+lab <- subset_samples(age, Source=="Lab")
+lab  <- prune_taxa(taxa_sums(lab) > 0, lab)
+lab_list <- taxa_names(lab)
+length(lab_list) # 1068
+
+skok <- data.frame(skok_list)
+lab <- data.frame(lab_list)
+sharedASVs <- data.frame(skok[which(skok$skok_list%in%lab$lab_list),]) 
+colnames(sharedASVs) <- "ASV"
+
+age <- age_PS
+otu_table(age) <- t(otu_table(age))
+trim <- subset(otu_table(age), rownames(otu_table(age)) %in% sharedASVs$ASV)
+age <- merge_phyloseq(trim, tax_table(age), sample_data(age))
+age # 391 taxa and 78 samples
+
+asv <- data.frame(otu_table(age))
+asv <- as.list(rownames(asv)) # 381
+asv_save <- t(as.data.frame(asv))
+write.csv(asv_save, "Age_shared_taxa_labANDwild.csv")
+
+skok <- subset_samples(age_PS, Source=="Wild") # 3183 taxa and 39 samples 
+otu <- data.frame(t(otu_table(skok)))
+colSums(otu) # 1
+otu$asv <- rownames(otu)
+otu <- otu[which(otu$asv%in%asv),] # 391
+mouse_sums <- otu[,c(1:39)]
+sumsums <- colSums(mouse_sums)
+range(sumsums) # 0.1970307 0.6154195
+mean(sumsums) #  0.419483
+median(sumsums) #  0.4096923
+sd(sumsums) # 0.1110636
+
+lab <- subset_samples(age_PS, Source=="Lab")
+otu <- data.frame(t(otu_table(lab)))
+colSums(otu) # 1
+otu$asv <- rownames(otu)
+otu <- otu[which(otu$asv%in%asv),] 
+mouse_sums <- otu[,c(1:39)]
+sumsums <- colSums(mouse_sums)
+range(sumsums) # 0.1526454 0.8744436
+mean(sumsums) #  0.4469368
+median(sumsums) #  0.4241759
+sd(sumsums) # 0.2006627
+
+# How many ASVs are found in ALL lab and ALL wild samples?
+age <- readRDS("phy.rds") # 361 samples
+age <- subset_taxa(age, Genus!="Imtechella")
+age <- subset_taxa(age, Genus!="Allobacillus")
+age <- subset_samples(age, Project=="Skokholm" | Facility=="BMS") # 355 samples
+sd <- data.frame(sample_data(age))
+
+lab <- sd[which(sd$Source=="Lab"),]
+table(lab$Sex, lab$chrono_age) # oldest males are 64d
+
+# Taking a random cross-sectional subset:
+M <- data.frame(sample_data(age))
+M$seq_ID <- rownames(M)
+M$Animal_ID[M$Animal_ID==0] <- NA
+M$Animal_ID <- ifelse(is.na(M$Animal_ID), M$trapdate, M$Animal_ID)
+unique(M$Animal_ID) # 239 unique; 40 lab, 315 wild
+set.seed(4638)
+M1 <- M %>% group_by(Animal_ID) %>% sample_n(1) # 239 samples left, correct - one per animal ID
+table(M1$Source) #  Lab 40, Wild 199
+
+M1 <- as.data.frame(M1)
+rownames(M1) <- M1$seq_ID
+M1_phy <- phyloseq(sample_data(M1), otu_table(otu_table(age)), tax_table(tax_table(age)), phy_tree(phy_tree(age))) # 239 samples
+M1_phy <- prune_taxa(taxa_sums(M1_phy) > 0, M1_phy) # 6235
+
+age <- M1_phy
+
+l <- subset_samples(age, Facility=="BMS")
+l <- data.frame(t(otu_table(l)))
+l <- l %>% mutate_if(is.numeric, ~1 * (. > 0))
+ll <- colSums(l)
+mean(ll)
+
+l <- subset_samples(age, Project=="Skokholm")
+l <- data.frame(t(otu_table(l)))
+l <- l %>% mutate_if(is.numeric, ~1 * (. > 0))
+ll <- colSums(l)
+mean(ll)
+
+n_seqs <- seq(ntaxa(age))
+len_n_seqs <- nchar(max(n_seqs))
+#taxa_names(age) <- paste("Seq", formatC(n_seqs,  width = len_n_seqs, flag = "0"), sep = "_")
+age_PS <- age
+
+# Trimming to taxa that is detected in ALL wild and ALL lab mouse samples
+
+skok <- subset_samples(age, Project=="Skokholm")
+skok <- rowSums(otu_table(skok) == 0) > 0
+skok_list <- taxa_names(skok)
+length(skok_list) # 0
+
+lab <- subset_samples(age, Facility=="BMS")
+lab <- rowSums(otu_table(lab) == 0) > 0
+lab_list <- taxa_names(lab)
+length(lab_list) # 0
+
+# 0 ASVs were found in ALL lab and ALL wild samples. In fact, zero ASVs within wild system were detected in all wild samples, and vice versa.
+
+# How many ASVs are in at least 25% of wild samples and 25% of lab samples?
+asv <- read.csv("Age_shared_taxa_labANDwild.csv")
+taxa_to_keep <- asv$V1
+filtered_phyloseq <- prune_taxa(taxa_to_keep, age)
+
+w <- subset_samples(filtered_phyloseq, Project=="Skokholm")
+min_samples <- ceiling(0.25 * nsamples(w))
+taxon_abundance <- rowSums(otu_table(w) > 0)
+included_taxa <- taxa_names(w)[taxon_abundance >= min_samples]
+w_filtered_phyloseq <- prune_taxa(included_taxa, w) # 459 taxa and 199 samples
+
+l <- subset_samples(filtered_phyloseq, Facility=="BMS")
+min_samples <- ceiling(0.25 * nsamples(l))
+taxon_abundance <- rowSums(otu_table(l) > 0)
+included_taxa <- taxa_names(l)[taxon_abundance >= min_samples]
+l_filtered_phyloseq <- prune_taxa(included_taxa, l) # 400 taxa and 40 samples
+
+# Of the above taxa, how many are in both systems?
+w_taxa <- as.data.frame(taxa_names(w_filtered_phyloseq)) # 459
+l_taxa <- as.data.frame(taxa_names(l_filtered_phyloseq)) # 400
+both <- w_taxa[which(w_taxa$`taxa_names(w_filtered_phyloseq)`%in%l_taxa$`taxa_names(l_filtered_phyloseq)`),] # 381
+write.csv(both, "Age_shared_taxa_25_labANDwild.csv")
+
+# What relative abundance do these taxa form of wild and lab microbiotas?
+
+skok <- subset_samples(age, Project=="Skokholm") # 6235 taxa and 199 samples
+skok <- microbiome::transform(skok, "compositional")
+otu <- data.frame(t(otu_table(skok)))
+colSums(otu) # 1
+otu$asv <- rownames(otu)
+otu <- otu[which(otu$asv%in%both),] # 381
+mouse_sums <- otu[,c(1:199)]
+sumsums <- colSums(mouse_sums)
+range(sumsums) # 0.1205875 0.6535445
+mean(sumsums) #  0.3628204
+median(sumsums) #  0.362775
+sd(sumsums) # 0.09284637
+
+lab <- subset_samples(age, Facility=="BMS")
+lab <- microbiome::transform(lab, "compositional")
+otu <- data.frame(t(otu_table(lab)))
+colSums(otu) # 1
+otu$asv <- rownames(otu)
+otu <- otu[which(otu$asv%in%both),] # 381
+mouse_sums <- otu[,c(1:40)]
+sumsums <- colSums(mouse_sums)
+range(sumsums) # 0.1031448 0.9848859
+mean(sumsums) #  0.3987523
+median(sumsums) #  0.3219411
+sd(sumsums) # 0.2416944
+
+# How many ASVs are in at least 50% of wild samples and 50% of lab samples?
+asv <- read.csv("Age_shared_taxa_labANDwild.csv")
+taxa_to_keep <- asv$V1
+filtered_phyloseq <- prune_taxa(taxa_to_keep, age)
+
+w <- subset_samples(filtered_phyloseq, Project=="Skokholm")
+min_samples <- ceiling(0.5 * nsamples(w))
+taxon_abundance <- rowSums(otu_table(w) > 0)
+included_taxa <- taxa_names(w)[taxon_abundance >= min_samples]
+w_filtered_phyloseq <- prune_taxa(included_taxa, w) # 228 taxa and 199 samples
+
+l <- subset_samples(filtered_phyloseq, Facility=="BMS")
+min_samples <- ceiling(0.5 * nsamples(l))
+taxon_abundance <- rowSums(otu_table(l) > 0)
+included_taxa <- taxa_names(l)[taxon_abundance >= min_samples]
+l_filtered_phyloseq <- prune_taxa(included_taxa, l) # 400 taxa and 40 samples
+
+# Of the above taxa, how many are in both systems?
+w_taxa <- as.data.frame(taxa_names(w_filtered_phyloseq)) # 228
+l_taxa <- as.data.frame(taxa_names(l_filtered_phyloseq)) # 400
+both <- w_taxa[which(w_taxa$`taxa_names(w_filtered_phyloseq)`%in%l_taxa$`taxa_names(l_filtered_phyloseq)`),] # 187
+write.csv(both, "Age_shared_taxa_50_labANDwild.csv")
+
+# What relative abundance do these taxa form of wild and lab microbiotas?
+
+skok <- subset_samples(age, Project=="Skokholm") # 6235 taxa and 199 samples
+skok <- microbiome::transform(skok, "compositional")
+otu <- data.frame(t(otu_table(skok)))
+colSums(otu) # 1
+otu$asv <- rownames(otu)
+otu <- otu[which(otu$asv%in%both),] # 187
+mouse_sums <- otu[,c(1:199)]
+sumsums <- colSums(mouse_sums)
+range(sumsums) # 0.04871481 0.56557125
+mean(sumsums) #  0.2292687
+median(sumsums) #  0.2221807
+sd(sumsums) # 0.08103548
+
+lab <- subset_samples(age, Facility=="BMS")
+lab <- microbiome::transform(lab, "compositional")
+otu <- data.frame(t(otu_table(lab)))
+colSums(otu) # 1
+otu$asv <- rownames(otu)
+otu <- otu[which(otu$asv%in%both),] # 187
+mouse_sums <- otu[,c(1:40)]
+sumsums <- colSums(mouse_sums)
+range(sumsums) # 0.08271141 0.74043271
+mean(sumsums) #  0.272414
+median(sumsums) #  0.2040405
+sd(sumsums) # 0.1777565
+
+# How many ASVs are in at least 75% of wild samples and 75% of lab samples?
+asv <- read.csv("Age_shared_taxa_labANDwild.csv")
+taxa_to_keep <- asv$V1
+filtered_phyloseq <- prune_taxa(taxa_to_keep, age)
+
+w <- subset_samples(filtered_phyloseq, Project=="Skokholm")
+min_samples <- ceiling(0.75 * nsamples(w))
+taxon_abundance <- rowSums(otu_table(w) > 0)
+included_taxa <- taxa_names(w)[taxon_abundance >= min_samples]
+w_filtered_phyloseq <- prune_taxa(included_taxa, w) # 26 taxa and 199 samples
+
+l <- subset_samples(filtered_phyloseq, Facility=="BMS")
+min_samples <- ceiling(0.75 * nsamples(l))
+taxon_abundance <- rowSums(otu_table(l) > 0)
+included_taxa <- taxa_names(l)[taxon_abundance >= min_samples]
+l_filtered_phyloseq <- prune_taxa(included_taxa, l) # 400 taxa and 40 samples
+
+# Of the above taxa, how many are in both systems?
+w_taxa <- as.data.frame(taxa_names(w_filtered_phyloseq)) # 26
+l_taxa <- as.data.frame(taxa_names(l_filtered_phyloseq)) # 400
+both <- w_taxa[which(w_taxa$`taxa_names(w_filtered_phyloseq)`%in%l_taxa$`taxa_names(l_filtered_phyloseq)`),] # 21
+write.csv(both, "Age_shared_taxa_75_labANDwild.csv")
+
+# What relative abundance do these taxa form of wild and lab microbiotas?
+
+skok <- subset_samples(age, Project=="Skokholm") # 6235 taxa and 199 samples
+skok <- microbiome::transform(skok, "compositional")
+otu <- data.frame(t(otu_table(skok)))
+colSums(otu) # 1
+otu$asv <- rownames(otu)
+otu <- otu[which(otu$asv%in%both),] # 21
+mouse_sums <- otu[,c(1:199)]
+sumsums <- colSums(mouse_sums)
+range(sumsums) # 0.0005279134 0.2560650680
+mean(sumsums) #  0.02422966
+median(sumsums) #  0.01749909
+sd(sumsums) # 0.02539814
+
+lab <- subset_samples(age, Facility=="BMS")
+lab <- microbiome::transform(lab, "compositional")
+otu <- data.frame(t(otu_table(lab)))
+colSums(otu) # 1
+otu$asv <- rownames(otu)
+otu <- otu[which(otu$asv%in%both),] # 21
+mouse_sums <- otu[,c(1:40)]
+sumsums <- colSums(mouse_sums)
+range(sumsums) # 0.0000000 0.0271963
+mean(sumsums) #  0.007662864
+median(sumsums) #  0.00493472
+sd(sumsums) # 0.007797456
+
+```
+
+Is age associated with gut microbiome composition in both lab and wild mice?
+
+```{r}
+
+age <- readRDS("phy.rds") # 513 samples
+
+# Lab:
+lab <- subset_samples(age, Source=="Lab")
+sample_data(lab)$Body_mass_g <- as.numeric(as.character(sample_data(lab)$Body_mass_g))
+lab_clr <- microbiome::transform(lab, "clr")
+lab_ord <- ordinate(lab_clr, "PCoA", "euclidean")
+BC <- plot_ordination(lab, lab_ord) 
+lab_bray_axes <- lab_ord$vectors[,1:2] 
+lab_bray_axes <- as.data.frame(lab_bray_axes)
+lab_bray_axes <- cbind(rownames(lab_bray_axes), lab_bray_axes)
+lab_sd <- data.frame(sample_data(lab))
+lab_sd$Seq_ID <- rownames(lab_sd)
+lab_BC <- merge(lab_sd, lab_bray_axes, by.x="Seq_ID", by.y="rownames(lab_bray_axes)")
+plot <- ggplot(lab_BC, aes(x=Body_mass_g, y=Axis.1)) + 
+    geom_smooth(method = "loess", color="#69A2B0", fill="#69A2B0", size=1.5) +
+     ylab("Aitchison PCo1 (23.0%)")  + ggtitle("") +
+  geom_point(color="#69A2B0", alpha=.8, size=2) +
+  xlab( c("Estimated body mass (g)")) +
+   theme_minimal() +
+   theme(axis.title = element_text(size = 30), axis.text = element_text(size = 25),  legend.text = element_text(size=15),
+         panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_x_continuous(n.breaks = 10) +
+   guides(fill=guide_legend(title="Age")) + scale_x_continuous(breaks=c(5,20,35,50,65,80))
+ggsave("PC1_aitch_lab.png", width = 6, height = 6)
+
+plot <- ggplot(lab_BC, aes(x=Body_mass_g, y=Axis.2)) + 
+    geom_smooth(method = "loess", color="#69A2B0", fill="#69A2B0", size=1.5) +
+     ylab("Aitchison PCo2 (11.1%)")  + ggtitle("") +
+  geom_point(color="#69A2B0", alpha=.8, size=2) +
+  xlab( c("Estimated body mass (g)")) +
+   theme_minimal() +
+   theme(axis.title = element_text(size = 30), axis.text = element_text(size = 25),  legend.text = element_text(size=15),
+         panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_x_continuous(n.breaks = 10) +
+   guides(fill=guide_legend(title="Age")) + scale_x_continuous(breaks=c(5,20,35,50,65,80))
+ggsave("PC2_aitch_lab.png", width = 6, height = 6)
+
+lab_ord <- ordinate(lab, "PCoA", "jaccard")
+BC <- plot_ordination(lab, lab_ord) 
+lab_bray_axes <- lab_ord$vectors[,1:2] 
+lab_bray_axes <- as.data.frame(lab_bray_axes)
+lab_bray_axes <- cbind(rownames(lab_bray_axes), lab_bray_axes)
+lab_sd <- data.frame(sample_data(lab))
+lab_sd$Seq_ID <- rownames(lab_sd)
+lab_BC <- merge(lab_sd, lab_bray_axes, by.x="Seq_ID", by.y="rownames(lab_bray_axes)")
+plot <- ggplot(lab_BC, aes(x=Body_mass_g, y=Axis.1)) + 
+    geom_smooth(method = "loess", color="#69A2B0", fill="#69A2B0", size=1.5) +
+     ylab("Jaccard PCo1 (23.7%)")  + ggtitle("") +
+  geom_point(color="#69A2B0", alpha=.8, size=2) +
+  xlab( c("Estimated body mass (g)")) +
+   theme_minimal() +
+   theme(axis.title = element_text(size = 30), axis.text = element_text(size = 25),  legend.text = element_text(size=15),
+         panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_x_continuous(n.breaks = 10) +
+   guides(fill=guide_legend(title="Age")) + scale_x_continuous(breaks=c(5,20,35,50,65,80))
+ggsave("PC1_jacc_lab.png", width = 6, height = 6)
+
+plot <- ggplot(lab_BC, aes(x=Body_mass_g, y=Axis.2)) + 
+    geom_smooth(method = "loess", color="#69A2B0", fill="#69A2B0", size=1.5) +
+     ylab("Jaccard PCo2 (10.2%)")  + ggtitle("") +
+  geom_point(color="#69A2B0", alpha=.8, size=2) +
+  xlab( c("Estimated body mass (g)")) +
+   theme_minimal() +
+   theme(axis.title = element_text(size = 30), axis.text = element_text(size = 25),  legend.text = element_text(size=15),
+         panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_x_continuous(n.breaks = 10) +
+   guides(fill=guide_legend(title="Age")) + scale_x_continuous(breaks=c(5,20,35,50,65,80))
+ggsave("PC2_jacc_lab.png", width = 6, height = 6)
+
+# Wild:
+wild <- subset_samples(age, Source=="Wild")
+sample_data(wild)$Body_mass_g <- as.numeric(as.character(sample_data(wild)$Body_mass_g))
+wild_clr <- microbiome::transform(wild, "clr")
+wild_ord <- ordinate(wild_clr, "PCoA", "euclidean")
+BC <- plot_ordination(wild, wild_ord)
+wild_bray_axes <- wild_ord$vectors[,1:2] 
+wild_bray_axes <- as.data.frame(wild_bray_axes)
+wild_bray_axes <- cbind(rownames(wild_bray_axes), wild_bray_axes)
+wild_sd <- data.frame(sample_data(wild))
+wild_sd$Seq_ID <- rownames(wild_sd)
+wild_BC <- merge(wild_sd, wild_bray_axes, by.x="Seq_ID", by.y="rownames(wild_bray_axes)")
+plot <- ggplot(wild_BC, aes(x=Body_mass_g, y=Axis.1)) + 
+  geom_smooth(method = "loess", color="#69A56B", fill="#69A56B", size=1.5) +
+  ylab("Aitchison PCo1 (5.0%)")  + ggtitle("") +
+  geom_point(color="#69A56B", alpha=.8, size=2) +
+  xlab( c("Estimated body mass (g)")) +
+  theme_minimal() +
+  theme(axis.title = element_text(size = 30), axis.text = element_text(size = 25),  legend.text = element_text(size=15),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_x_continuous(n.breaks = 10) +
+  guides(fill=guide_legend(title="Age")) + scale_x_continuous(breaks=c(5,20,35,50,65,80))
+ggsave("PC1_aitch_wild.png", width = 6, height = 6)
+
+plot <- ggplot(wild_BC, aes(x=Body_mass_g, y=Axis.2)) + 
+  geom_smooth(method = "loess", color="#69A56B", fill="#69A56B", size=1.5) +
+  ylab("Aitchison PCo2 (3.4%)")  + ggtitle("") +
+  geom_point(color="#69A56B", alpha=.8, size=2) +
+  xlab( c("Estimated body mass (g)")) +
+  theme_minimal() +
+  theme(axis.title = element_text(size = 30), axis.text = element_text(size = 25),  legend.text = element_text(size=15),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_x_continuous(n.breaks = 10) +
+  guides(fill=guide_legend(title="Age")) + scale_x_continuous(breaks=c(5,20,35,50,65,80))
+ggsave("PC2_aitch_wild.png", width = 6, height = 6)
+
+wild_ord <- ordinate(wild, "PCoA", "jaccard")
+BC <- plot_ordination(wild, wild_ord) 
+wild_bray_axes <- wild_ord$vectors[,1:2] 
+wild_bray_axes <- as.data.frame(wild_bray_axes)
+wild_bray_axes <- cbind(rownames(wild_bray_axes), wild_bray_axes)
+wild_sd <- data.frame(sample_data(wild))
+wild_sd$Seq_ID <- rownames(wild_sd)
+wild_BC <- merge(wild_sd, wild_bray_axes, by.x="Seq_ID", by.y="rownames(wild_bray_axes)")
+plot <- ggplot(wild_BC, aes(x=Body_mass_g, y=Axis.1)) + 
+  geom_smooth(method = "loess", color="#69A56B", fill="#69A56B", size=1.5) +
+  ylab("Jaccard PCo1 (5.0%)")  + ggtitle("") +
+  geom_point(color="#69A56B", alpha=.8, size=2) +
+  xlab( c("Estimated body mass (g)")) +
+  theme_minimal() +
+  theme(axis.title = element_text(size = 30), axis.text = element_text(size = 25),  legend.text = element_text(size=15),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_x_continuous(n.breaks = 10) +
+  guides(fill=guide_legend(title="Age")) + scale_x_continuous(breaks=c(5,20,35,50,65,80))
+ggsave("PC1_jacc_wild.png", width = 6, height = 6)
+
+plot <- ggplot(wild_BC, aes(x=Body_mass_g, y=Axis.2)) + 
+  geom_smooth(method = "loess", color="#69A56B", fill="#69A56B", size=1.5) +
+  ylab("Jaccard PCo2 (3.2%)")  + ggtitle("") +
+  geom_point(color="#69A56B", alpha=.8, size=2) +
+  xlab( c("Estimated body mass (g)")) +
+  theme_minimal() +
+  theme(axis.title = element_text(size = 30), axis.text = element_text(size = 25),  legend.text = element_text(size=15),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_x_continuous(n.breaks = 10) +
+  guides(fill=guide_legend(title="Age")) + scale_x_continuous(breaks=c(5,20,35,50,65,80))
+ggsave("PC2_jacc_wild.png", width = 6, height = 6)
+
+```
+
+Do lab and wild mice have similar alpha diversity patterns?
+
+```{r}
+
+age <- readRDS("phy.rds") 
+
+diversity <- data.frame(sample_data(age))
+lab <- diversity[which(diversity$Source=="Lab"),]
+wild <- diversity[which(diversity$Source=="Wild"),]
+
+range(lab$Body_mass_g) #  3.5 33.1
+range(wild$Body_mass_g) # NA/NA - but checked manually: 5.4 28.5
+
+lm_model1<-(lm(lab$Richness_asy ~ lab$Body_mass_g))
+plot(lm_model1) 
+lm_model1<-(lm(log(lab$Richness_asy) ~ lab$Body_mass_g))
+plot(lm_model1) 
+
+lm_model2<-(lm(wild$Richness_asy ~ wild$Body_mass_g))
+AIC(lm_model2)
+
+# When does relationship between alpha diversity and age plateau?
+library(easynls)
+library(nlshelper)
+library(nlstools)
+
+lab_save <- lab
+lab <- lab[, c("Body_mass_g", "Richness_asy", "weaned")]
+nlsplot (lab, model=4,xlab="mass",ylab="richness")
+fit_lab <- nlsfit(lab, model=4) # R-squared 0.59600000; AIC 430.94113252
+check_linear <- nlsfit(lab, model=1) # R-squared 0.19020000; AIC 456.06198987
+dta.nls <- nls(Richness_asy ~ (a + b * Body_mass_g + c * I(Body_mass_g^2)) * (Body_mass_g <= -0.5 * b/c) + (a + I(-b^2/(4 * c))) * (Body_mass_g > -0.5 * b/c), lab, start=list(a=-292.55730046,b=75.90842107,c=as.numeric(-2.85060593)))
+summary(dta.nls) # 
+
+lab$line <- predict(dta.nls)
+plot <- ggplot(lab, aes(x = Body_mass_g, y = Richness_asy)) +
+  #annotate("rect", xmin = 11.6, xmax = 15.0, ymin = -10, ymax = 320, alpha = 0.15, color = NA, fill='steelblue4')+
+  annotate("segment", x = 13.31443611,
+  xend = 13.31443611, y = 0,
+  yend = 300,
+  colour = "gray50", size = 1, linetype = "dashed") +
+  geom_point(aes(size = 1, shape = weaned), colour = "#69A2B0", alpha = .7, stroke=1, size=3) +
+  scale_shape_manual(values = c(1,19)) +
+  xlab("Estimated body mass (g)") + ylab("ASV richness") +
+  theme_minimal() +
+  theme(legend.position = "none",
+  axis.title = element_text(size = 30),
+  axis.text = element_text(size = 25),
+  legend.text = element_text(size = 15),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) +
+  geom_line(aes(y = line), size = 1.5, color = 'steelblue4') +
+  coord_cartesian(ylim = c(0, 300))
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("ASV_lab.png", plot=p, width = 6, height = 6)
+
+lab <- diversity[which(diversity$Source=="Lab"),]
+lab <- lab[, c("chrono_age", "Richness_asy", "weaned")]
+nlsplot (lab, model=4,xlab="mass",ylab="richness")
+nlsfit(lab, model=4) # R-squared 0.63680000
+dta.nls <- nls(Richness_asy ~ (a + b * chrono_age + c * I(chrono_age^2)) * (chrono_age <= -0.5 * b/c) + (a + I(-b^2/(4 * c))) * (chrono_age > -0.5 * b/c), lab, start=list(a=-222.12964749,b=27.13722120,c=as.numeric(-0.42232643)))
+lab$line <- predict(dta.nls)
+plot <- ggplot(lab, aes(x = chrono_age, y = Richness_asy)) +
+  annotate("segment", x = 32.12825358, 
+           xend = 32.12825358, y = 0, 
+           yend = 300,
+           colour = "gray50", size = 1, linetype = "dashed") +
+  geom_point(aes(size = 1, shape = weaned), colour = "#69A2B0", alpha = .7, stroke=1, size=3) +
+  scale_shape_manual(values = c(1,19)) +
+  xlab("Estimated body mass (g)") + ylab("ASV richness") + 
+  theme_minimal() +
+  theme(legend.position = "none",
+    axis.title = element_text(size = 30),
+    axis.text = element_text(size = 25),
+    legend.text = element_text(size = 15),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_x_continuous(breaks = c(10, 30, 50, 70, 90, 110, 130)) +
+  geom_line(aes(y = line), size = 1.5, color = 'steelblue4') +
+  coord_cartesian(ylim = c(0, 300))
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("ASV_lab_AGE.png", plot=p, width = 6, height = 6)
+
+# Wild 
+wild <- wild[, c("Body_mass_g", "Richness_asy")]
+wild <- na.omit(wild)
+nlsplot (wild, model=4,xlab="Age",ylab="richness")
+fit_wild <- nlsfit(wild, model=4)
+# adjusted r-squared                0.04450000
+# AIC                            5135.03787438
+# coefficient a                    84.59238373
+# coefficient b                    19.01220175
+# coefficient c                    -0.45894920
+# maximum or minimum value for y  281.48989306
+# critical point in x              20.71275194
+check_linear <- nlsfit(wild, model=1) # Adjusted R-squared: 0.03760000, AIC: 5137.170
+dta.nls <- nls(Richness_asy ~ (a + b * Body_mass_g + c * I(Body_mass_g^2)) * (Body_mass_g <= -0.5 * b/c) + (a + I(-b^2/(4 * c))) * (Body_mass_g > -0.5 * b/c), wild, start=list(a=84.59238373,b= 19.01220175,c=as.numeric( -0.45894920)))
+wild$line <- predict(dta.nls)
+plot <- ggplot(wild, aes(x = Body_mass_g, y = Richness_asy)) +
+  annotate("segment", x = 20.71275194, 
+           xend = 20.71275194, y = 0, 
+           yend = 600,
+           colour = "gray50", size = 1, linetype = "dashed") +
+   geom_point(aes(size = 1), colour = "#69A56B", alpha = .7, stroke=1, size=3) +
+  scale_shape_manual(values = c(19)) +
+  xlab("Body mass (grams)") + ylab("ASV richness") + 
+  theme_minimal() +
+  theme(legend.position = "none",
+  axis.title = element_text(size = 30),
+  axis.text = element_text(size = 25),
+  legend.text = element_text(size = 15),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+  geom_line(aes(y = line), size = 1.5, color = 'palegreen4') +
+  ylim(0, 600) +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) 
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("ASV_wild.png", plot=p, width = 6, height = 6)
+
+```
+
+Does wild alpha diversity pattern look the same when only including one sample per animal?
+
+```{r}
+
+age <- readRDS("phy.rds")  
+
+diversity <- data.frame(sample_data(age))
+lab <- diversity[which(diversity$Source=="Lab"),]
+wild <- diversity[which(diversity$Source=="Wild"),]
+
+range(lab$Body_mass_g) #  3.5 33.1
+range(wild$Body_mass_g) # NA/NA - but checked manually: 5.4 28.5
+
+# When does relationship between alpha diversity and age plateau?
+library(easynls)
+library(nlshelper)
+library(nlstools)
+
+# Wild - all samples
+wild <- wild[, c("Body_mass_g", "Richness_asy")]
+wild <- na.omit(wild)
+nlsplot (wild, model=4,xlab="Age",ylab="richness")
+fit_wild <- nlsfit(wild, model=4) # R-squared 0.04810000
+# coefficient a                    84.59238373
+# coefficient b                    19.01220175
+# coefficient c                    -0.45894920
+# adjusted r-squared                0.04450000
+# AIC                            5135.03787438
+# maximum or minimum value for y  281.48989306
+# critical point in x              20.71275194
+check_linear <- nlsfit(wild, model=1) # adjusted r-squared   0.03760000; AIC 5137.170
+
+# Wild - cross-sectional (select first sample for all animals)
+wild <- diversity[which(diversity$Source=="Wild"),] # 433
+wild$Collection_date <- strptime(as.character(wild$Collection_date), "%d/%m/%Y") # here use current format
+wild$Collection_date <- format(wild$Collection_date, "%Y/%m/%d") # here use desired format
+wild <- wild[order(wild$Animal_ID, wild$Collection_date, decreasing = F),]
+wild$Time_point <- as.numeric(unlist(lapply(split(wild, wild$Animal_ID), function(x) { rank(x$Collection_date) })))
+wild <- wild[which(wild$Time_point==1),]
+duplicated(wild$Animal_ID) # FALSE
+wild <- wild[, c("Body_mass_g", "Richness_asy")]
+wild <- na.omit(wild)
+fit_wild <- nlsfit(wild, model=4) 
+# coefficient a                    22.19958766
+# coefficient b                    28.90711299
+# coefficient c                    -0.79410284
+# adjusted r-squared                0.04250000
+# AIC                            2754.37044378
+# maximum or minimum value for y  285.27041874
+# critical point in x              18.20111411
+
+dta.nls <- nls(Richness_asy ~ (a + b * Body_mass_g + c * I(Body_mass_g^2)) * (Body_mass_g <= -0.5 * b/c) + (a + I(-b^2/(4 * c))) * (Body_mass_g > -0.5 * b/c), wild, start=list(a=22.19958766,b= 28.90711299,c=as.numeric( -0.79410284))) 
+
+wild$line <- predict(dta.nls)
+plot <- ggplot(wild, aes(x = Body_mass_g, y = Richness_asy)) +
+  annotate("segment", x = 18.20111411, 
+           xend = 18.20111411, y = 0, 
+           yend = 600,
+           colour = "gray50", size = 1, linetype = "dashed") +
+   geom_point(aes(size = 1), colour = "#69A56B", alpha = .7, stroke=1, size=3) +
+  scale_shape_manual(values = c(19)) +
+  xlab("Body mass (grams)") + ylab("ASV richness") + 
+  theme_minimal() +
+  theme(legend.position = "none",
+  axis.title = element_text(size = 30),
+  axis.text = element_text(size = 25),
+  legend.text = element_text(size = 15),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+  geom_line(aes(y = line), size = 1.5, color = 'palegreen4') +
+  ylim(0, 600) +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) 
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("ASV_wild_CROSS.png", plot=p, width = 6, height = 6)
+
+```
+
+Does microbial distance to 'juvenile microbiome' increase with body mass? Going to use mice of estimated <=14d of age, so for lab mice mice that weight <=6.5g and wild mice that weigh <=7.9g. This wild mouse estimate of 14 comes from Fig5 in Ferrari 2015 and is taken as the estimated mean of communally and solitarily raised mice (estimate is same for male and female pups).
+
+```{r}
+
+age <- readRDS("phy.rds") 
+
+# Save source data
+source <- age
+df <- data.frame(sample_data(source))
+df <- df[,c("Source", "read_count", "Shannon_asy", "Richness_asy", "IMR_code", "chrono_age", "Body_mass_g", "weaned")]
+rownames(df) <- df$IMR_code
+sample_data(source) <- df
+saveRDS(source, "Source_data_Assembly_FIG2.rds")
+
+# LAB:
+age_l <- subset_samples(age, Source=="Lab") # 39 samples
+sample_data(age_l)$Animal_ID <- sample_data(age_l)$trapdate
+lab_tinyref <- subset_samples(age_l, chrono_age<=14) # 6
+lab_tinyref <- merge_samples(lab_tinyref, "Source") # 1 sample left
+sample_data(lab_tinyref)$Animal_ID <- "tinyref"
+labs <- merge_phyloseq(age_l, lab_tinyref) # 40 samples
+
+labs_clr <- microbiome::transform(labs, "clr")
+D <- phyloseq::distance(labs_clr, method = "euclidean", type = "samples")
+D <- as.matrix(D)
+D_melt <- melt(D)
+sd <- data.frame(sample_data(labs))
+sd <- sd[,c("chrono_age", "Body_mass_g", "Animal_ID", "weaned")]
+sd$Mouse <- rownames(sd)
+sd$Mouse_age <- sd$chrono_age
+sd$Mouse_age <- ifelse(is.na(sd$Mouse_age), sd$Body_mass_g, sd$Mouse_age)
+sd <- sd[,c("Mouse", "Body_mass_g", "Animal_ID", "weaned")]
+sd <- na.omit(sd)
+colnames(D_melt) <- c("mouse1", "mouse2", "BC_distance")
+distance <- merge(D_melt, sd, by.x="mouse1", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse1", "mouse2", "BC_distance",  "mouse1_age", "mouse1_ID", "mouse1_w")
+distance <- merge(distance, sd, by.x="mouse2", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse2", "mouse1", "BC_distance",  "mouse1_age", "mouse1_ID", "mouse1_w",  "mouse2_age", "mouse2_ID", "mouse2_w")
+distance <- na.omit(distance)
+distance <- distance[distance$mouse1!=distance$mouse2, ] # removing self-comparisons
+distance <- distance[distance$mouse1_ID!=distance$mouse2_ID, ] # removing self-comparisons
+distance <- distance[which(distance$mouse1_ID=="tinyref"),]
+lab_x <- distance
+
+lab <- lab_x[, c("mouse2_age", "mouse2_w", "BC_distance")] # age is actually body mass
+nlsplot (lab, model=4,xlab="Age",ylab="Aitchison dissimilarity")
+fit <- nlsfit(lab, model=4) 
+check_linear <- nlsfit(lab, model=1) 
+dta.nls <- nls(BC_distance ~ (a + b * mouse2_age + c * I(mouse2_age^2)) * (mouse2_age <= -0.5 * b/c) + (a + I(-b^2/(4 * c))) * (mouse2_age > -0.5 * b/c), lab_x, start=list(a= -31.82830813,b=17.57649494,c=as.numeric(-0.67639656)))
+lab$line <- predict(dta.nls)
+lab$mouse2_w <- as.character(as.numeric(lab$mouse2_w))
+plot <- ggplot(lab, aes(x = mouse2_age, y = BC_distance)) +
+  annotate("segment", x = 12.99274417, 
+           xend = 12.99274417, y = 0, 
+           yend = 120,
+           colour = "gray50", size = 1, linetype = "dashed") +
+   geom_point(aes(size = 1, shape = mouse2_w), colour = "#69A2B0", alpha = .7, stroke=1, size=3) +
+  scale_shape_manual(values = c(1,19)) +
+  xlab("Estimated body mass (g)") + ylab("Aitchison dissimilarity to juvenile microbiome") + 
+  theme_minimal() +
+  theme(legend.position = "none",
+  axis.title = element_text(size = 30),
+  axis.text = element_text(size = 25),
+  legend.text = element_text(size = 15),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) +
+  scale_y_continuous(breaks = c(0, 40, 80, 120), minor_breaks = NULL) +
+  geom_line(aes(y = line), size = 1.5, color = 'steelblue4')
+ggsave("RefJuv_lab.png", width = 6, height = 6)
+
+# WILD
+age_w <- subset_samples(age, Source=="Wild") # 474 samples
+wild_tinyref <- subset_samples(age_w, Body_mass_g<=7.9) # 16 samples
+wild_tinyref <- merge_samples(wild_tinyref, "Source") # 1 sample left
+sample_data(wild_tinyref)$Animal_ID <- "tinyref"
+wilds <- merge_phyloseq(age_w, wild_tinyref) # 471 samples
+
+wilds_clr <- microbiome::transform(wilds, "clr")
+D <- phyloseq::distance(wilds_clr, method = "euclidean", type = "samples")
+D <- as.matrix(D)
+D_melt <- melt(D)
+sd <- data.frame(sample_data(wilds))
+sd <- sd[,c("chrono_age", "Body_mass_g", "Animal_ID")]
+sd$Mouse <- rownames(sd)
+sd$Mouse_age <- sd$Body_mass_g
+sd <- sd[,c("Mouse", "Mouse_age", "Animal_ID")]
+sd <- na.omit(sd)
+colnames(D_melt) <- c("mouse1", "mouse2", "BC_distance")
+distance <- merge(D_melt, sd, by.x="mouse1", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse1", "mouse2", "BC_distance",  "mouse1_age", "mouse1_ID")
+distance <- merge(distance, sd, by.x="mouse2", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse2", "mouse1", "BC_distance",  "mouse1_age", "mouse1_ID",  "mouse2_age", "mouse2_ID")
+distance <- na.omit(distance)
+distance <- distance[distance$mouse1!=distance$mouse2, ] # removing self-comparisons
+distance <- distance[distance$mouse1_ID!=distance$mouse2_ID, ] # removing self-comparisons
+distance <- distance[which(distance$mouse1_ID=="tinyref"),]
+wild_x <- distance
+
+wild <- wild_x[, c("mouse2_age", "BC_distance")]
+nlsplot (wild, model=4,xlab="Body mass",ylab="Aitchison dissimilarity")
+nlsfit(wild, model=4) 
+# coefficient a                   106.15563847
+# coefficient b                     8.47763078
+# coefficient c                    -0.31467649
+# adjusted r-squared                0.24890000
+# AIC                            2596.62495335
+# maximum or minimum value for y  163.25413961
+# critical point in x              13.47039111
+check_linear <- nlsfit(wild, model=1) # adj R-sqr 0.0953000, AIC 2676.1586937
+dta.nls <- nls(BC_distance ~ (a + b * mouse2_age + c * I(mouse2_age^2)) * (mouse2_age <= -0.5 * b/c) + (a + I(-b^2/(4 * c))) * (mouse2_age > -0.5 * b/c), wild_x, start=list(a=106.15563847,b=8.47763078,c=as.numeric(-0.31467649)))
+wild$line <- predict(dta.nls)
+plot <- ggplot(wild, aes(x = mouse2_age, y = BC_distance)) +
+  annotate("segment", x = 13.47039111, 
+           xend = 13.47039111, y = 110, 
+           yend = 200,
+           colour = "gray50", size = 1, linetype = "dashed") +
+  geom_point(aes(size = 1), colour = "#69A56B", alpha = .7, stroke=1, size=3) +
+  scale_shape_manual(values = c(19)) +
+  xlab("Body mass (grams)") + ylab("Aitchison dissimilarity to juvenile microbiome") + 
+  theme_minimal() +
+  theme(legend.position = "none",
+  axis.title = element_text(size = 30),
+  axis.text = element_text(size = 25),
+  legend.text = element_text(size = 15),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) +
+  scale_y_continuous(breaks = c(120, 140, 160, 180, 200)) +
+  geom_line(aes(y = line), size = 1.5, color = 'palegreen4')
+ggsave("RefJuv_wild.png", width = 6, height = 6)
+
+### REPEATING WITH JACCARD
+
+age <- readRDS("phy.rds") 
+
+# LAB:
+age_l <- subset_samples(age, Source=="Lab") # 39 samples
+sample_data(age_l)$Animal_ID <- sample_data(age_l)$trapdate
+lab_tinyref <- subset_samples(age_l, chrono_age<=14) # 6
+lab_tinyref <- merge_samples(lab_tinyref, "Source") # 1 sample left
+sample_data(lab_tinyref)$Animal_ID <- "tinyref"
+labs <- merge_phyloseq(age_l, lab_tinyref) # 40 samples
+
+D <- phyloseq::distance(labs, method = "jaccard", type = "samples")
+D <- as.matrix(D)
+D_melt <- melt(D)
+sd <- data.frame(sample_data(labs))
+sd <- sd[,c("chrono_age", "Body_mass_g", "Animal_ID")]
+sd$Mouse <- rownames(sd)
+sd$Mouse_age <- sd$chrono_age
+sd$Mouse_age <- ifelse(is.na(sd$Mouse_age), sd$Body_mass_g, sd$Mouse_age)
+sd <- sd[,c("Mouse", "Body_mass_g", "Animal_ID")]
+sd <- na.omit(sd)
+colnames(D_melt) <- c("mouse1", "mouse2", "BC_distance")
+distance <- merge(D_melt, sd, by.x="mouse1", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse1", "mouse2", "BC_distance",  "mouse1_age", "mouse1_ID")
+distance <- merge(distance, sd, by.x="mouse2", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse2", "mouse1", "BC_distance",  "mouse1_age", "mouse1_ID",  "mouse2_age", "mouse2_ID")
+distance <- na.omit(distance)
+distance <- distance[distance$mouse1!=distance$mouse2, ] # removing self-comparisons
+distance <- distance[distance$mouse1_ID!=distance$mouse2_ID, ] # removing self-comparisons
+distance <- distance[which(distance$mouse1_ID=="tinyref"),]
+lab_x <- distance
+
+lab <- lab_x[, c("mouse2_age", "BC_distance")] # age is actually body mass
+nlsplot (lab, model=4,xlab="Age",ylab="Jaccard dissimilarity")
+nlsfit(lab, model=4)
+dta.nls <- nls(BC_distance ~ (a + b * mouse2_age + c * I(mouse2_age^2)) * (mouse2_age <= -0.5 * b/c) + (a + I(-b^2/(4 * c))) * (mouse2_age > -0.5 * b/c), lab_x, start=list(a= 0.56065892,b=0.06905222,c=as.numeric(-0.00275723)))
+lab$line <- predict(dta.nls)
+plot <- ggplot(lab, aes(x = mouse2_age, y = BC_distance)) +
+  annotate("segment", x = 12.52202550, 
+           xend = 12.52202550, y = .7, 
+           yend = 1,
+           colour = "gray50", size = 1, linetype = "dashed") +
+  geom_point(size = 3, colour = "#69A2B0", alpha = .8) +
+  xlab("Estimated body mass (g)") + ylab("Jaccard dissimilarity to juvenile microbiome") + 
+  theme_minimal() +
+  theme(
+    axis.title = element_text(size = 30),
+    axis.text = element_text(size = 25),
+    legend.text = element_text(size = 15),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) +
+  geom_line(aes(y = line), size = 1.5, color = 'steelblue4')
+ggsave("RefJuv_lab_JAC.png", width = 6, height = 6)
+
+# WILD
+age_w <- subset_samples(age, Source=="Wild") # 474 samples
+wild_tinyref <- subset_samples(age_w, Body_mass_g<=7.9) # 16 samples
+wild_tinyref <- merge_samples(wild_tinyref, "Source") # 1 sample left
+sample_data(wild_tinyref)$Animal_ID <- "tinyref"
+wilds <- merge_phyloseq(age_w, wild_tinyref) # 471 samples
+
+D <- phyloseq::distance(wilds, method = "jaccard", type = "samples")
+D <- as.matrix(D)
+D_melt <- melt(D)
+sd <- data.frame(sample_data(wilds))
+sd <- sd[,c("chrono_age", "Body_mass_g", "Animal_ID")]
+sd$Mouse <- rownames(sd)
+sd$Mouse_age <- sd$Body_mass_g
+sd <- sd[,c("Mouse", "Mouse_age", "Animal_ID")]
+sd <- na.omit(sd)
+colnames(D_melt) <- c("mouse1", "mouse2", "BC_distance")
+distance <- merge(D_melt, sd, by.x="mouse1", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse1", "mouse2", "BC_distance",  "mouse1_age", "mouse1_ID")
+distance <- merge(distance, sd, by.x="mouse2", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse2", "mouse1", "BC_distance",  "mouse1_age", "mouse1_ID",  "mouse2_age", "mouse2_ID")
+distance <- na.omit(distance)
+distance <- distance[distance$mouse1!=distance$mouse2, ] # removing self-comparisons
+distance <- distance[distance$mouse1_ID!=distance$mouse2_ID, ] # removing self-comparisons
+distance <- distance[which(distance$mouse1_ID=="tinyref"),]
+wild_x <- distance
+
+wild <- wild_x[, c("mouse2_age", "BC_distance")]
+nlsplot (wild, model=4,xlab="Body mass",ylab="Jaccard dissimilarity")
+nlsfit(wild, model=4) # 2.017000e-01
+dta.nls <- nls(BC_distance ~ (a + b * mouse2_age + c * I(mouse2_age^2)) * (mouse2_age <= -0.5 * b/c) + (a + I(-b^2/(4 * c))) * (mouse2_age > -0.5 * b/c), wild_x, start=list(a=0.8462308,b=0.01961510,c=as.numeric(-0.0008697600)))
+wild$line <- predict(dta.nls)
+plot <- ggplot(wild, aes(x = mouse2_age, y = BC_distance)) +
+  annotate("segment", x = 11.27622, 
+           xend = 11.27622, y = .9, 
+           yend = 1,
+           colour = "gray50", size = 1, linetype = "dashed") +
+  geom_point(size = 3, colour = "#69A56B", alpha = .8) +
+  xlab("Body mass (grams)") + ylab("Jaccard dissimilarity to juvenile microbiome") + 
+  theme_minimal() +
+  theme(
+    axis.title = element_text(size = 30),
+    axis.text = element_text(size = 25),
+    legend.text = element_text(size = 15),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) +
+  geom_line(aes(y = line), size = 1.5, color = 'palegreen4')
+ggsave("RefJuv_wild_JAC.png", width = 6, height = 6)
+
+```
+
+Repeat 'distance to juvenile' with just one sample per animal for wild samples
+
+```{r}
+
+age <- readRDS("phy.rds") 
+diversity <- data.frame(sample_data(age))
+wild <- diversity[which(diversity$Source=="Wild"),]
+wild$Collection_date <- strptime(as.character(wild$Collection_date), "%d/%m/%Y") # here use current format
+wild$Collection_date <- format(wild$Collection_date, "%Y/%m/%d") # here use desired format
+wild <- wild[order(wild$Animal_ID, wild$Collection_date, decreasing = F),]
+wild$Time_point <- as.numeric(unlist(lapply(split(wild, wild$Animal_ID), function(x) { rank(x$Collection_date) })))
+wild <- wild[which(wild$Time_point==1),]
+
+# WILD
+age_w <- subset_samples(age, trapdate%in%wild$trapdate) # 230 samples
+wild_tinyref <- subset_samples(age_w, Body_mass_g<=7.9) # 7 samples
+wild_tinyref <- merge_samples(wild_tinyref, "Source") # 1 sample left
+sample_data(wild_tinyref)$Animal_ID <- "tinyref"
+wilds <- merge_phyloseq(age_w, wild_tinyref) # 231 samples
+
+wilds_clr <- microbiome::transform(wilds, "clr")
+D <- phyloseq::distance(wilds_clr, method = "euclidean", type = "samples")
+D <- as.matrix(D)
+D_melt <- melt(D)
+sd <- data.frame(sample_data(wilds))
+sd <- sd[,c("chrono_age", "Body_mass_g", "Animal_ID")]
+sd$Mouse <- rownames(sd)
+sd$Mouse_age <- sd$Body_mass_g
+sd <- sd[,c("Mouse", "Mouse_age", "Animal_ID")]
+sd <- na.omit(sd)
+colnames(D_melt) <- c("mouse1", "mouse2", "BC_distance")
+distance <- merge(D_melt, sd, by.x="mouse1", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse1", "mouse2", "BC_distance",  "mouse1_age", "mouse1_ID")
+distance <- merge(distance, sd, by.x="mouse2", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse2", "mouse1", "BC_distance",  "mouse1_age", "mouse1_ID",  "mouse2_age", "mouse2_ID")
+distance <- na.omit(distance)
+distance <- distance[distance$mouse1!=distance$mouse2, ] # removing self-comparisons
+distance <- distance[distance$mouse1_ID!=distance$mouse2_ID, ] # removing self-comparisons
+distance <- distance[which(distance$mouse1_ID=="tinyref"),]
+wild_x <- distance
+
+wild <- wild_x[, c("mouse2_age", "BC_distance")]
+nlsplot (wild, model=4,xlab="Body mass",ylab="Aitchison dissimilarity")
+nlsfit(wild, model=4) # R-squared 0.32740000, critical point 13.69207991
+dta.nls <- nls(BC_distance ~ (a + b * mouse2_age + c * I(mouse2_age^2)) * (mouse2_age <= -0.5 * b/c) + (a + I(-b^2/(4 * c))) * (mouse2_age > -0.5 * b/c), wild_x, start=list(a=67.06346751,b=9.79132354,c=as.numeric(-0.35755428)))
+wild$line <- predict(dta.nls)
+plot <- ggplot(wild, aes(x = mouse2_age, y = BC_distance)) +
+  annotate("segment", x = 13.69207991, 
+           xend = 13.69207991, y = 110, 
+           yend = 180,
+           colour = "gray50", size = 1, linetype = "dashed") +
+  geom_point(aes(size = 1), colour = "#69A56B", alpha = .7, stroke=1, size=3) +
+  scale_shape_manual(values = c(19)) +
+  xlab("Body mass (grams)") + ylab("Aitchison dissimilarity to juvenile microbiome") + 
+  theme_minimal() +
+  theme(legend.position = "none",
+  axis.title = element_text(size = 30),
+  axis.text = element_text(size = 25),
+  legend.text = element_text(size = 15),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+  geom_line(aes(y = line), size = 1.5, color = 'palegreen4') +
+  ylim(100, 200) +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) 
+ggsave("RefJuv_wild_CROSS.png", width = 6, height = 6)
+
+```
+
+Does beta diversity decrease in both systems?
+
+```{r}
+
+age <- readRDS("phy.rds")
+
+# Create big bins (divide into three groups based on range in body mass across lab and wild mice)
+binning <- data.frame(sample_data(age))
+binning <- binning[complete.cases(binning$Body_mass_g),]
+# Calculate the breaks for the bins based on the 'Mass' column
+breaks <- seq(min(binning$Body_mass_g), max(binning$Body_mass_g), length.out = 4)
+
+# Create a new column 'Bin' based on the breaks
+binning$Bin <- cut(binning$Body_mass_g, breaks = breaks, include.lowest = TRUE, labels = FALSE)
+
+# Check if each bin has at least 10 samples
+bin_counts <- table(binning$Bin)
+bins_with_few_samples <- bin_counts[bin_counts < 10]
+
+# Recalculate the bins by merging bins with less than 10 samples
+binning$Bin <- ifelse(binning$Bin %in% bins_with_few_samples, max(binning$Bin) + 1, binning$Bin)
+table(binning$Bin, binning$Body_mass_g)
+# Bin 1: <=13.3g
+# Bin 2: 13.4-23.2g
+# Bin 3: 23.3-33.1g
+
+# Small bins: 
+# Calculate the breaks for the bins
+breaks <- seq(from = 3.5, to = 33.1, length.out = 10)
+
+# Create labels for the bins
+labels <- paste0(breaks[-length(breaks)], " to ", breaks[-1])
+
+# Print the ranges for the bins
+cat(labels)
+# 3.5 to 6.78888888888889
+# 6.78888888888889 to 10.0777777777778
+# 10.0777777777778 to 13.3666666666667
+# 13.3666666666667 to 16.6555555555556
+# 16.6555555555556 to 19.9444444444444
+# 19.9444444444444 to 23.2333333333333
+# 23.2333333333333 to 26.5222222222222
+# 26.5222222222222 to 29.8111111111111
+# 29.8111111111111 to 33.1
+
+# Measure
+D <- phyloseq::distance(age, method = "jaccard", type = "samples", binary=TRUE)
+D <- as.matrix(D)
+D_melt <- melt(D)
+sd <- data.frame(sample_data(age))
+sd <- sd[,c("Source", "chrono_age", "Body_mass_g", "Animal_ID")]
+sd$Mouse <- rownames(sd)
+sd$Mouse_age <- sd$Body_mass_g
+sd$Mouse_age <- ifelse(is.na(sd$Mouse_age), sd$Body_mass_g, sd$Mouse_age)
+sd <- sd[,c("Source", "Mouse", "Mouse_age", "Animal_ID")]
+sd <- na.omit(sd)
+colnames(D_melt) <- c("mouse1", "mouse2", "BC_distance")
+distance <- merge(D_melt, sd, by.x="mouse1", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse1", "mouse2", "BC_distance", "mouse1_source", "mouse1_age", "mouse1_ID")
+distance <- merge(distance, sd, by.x="mouse2", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse2", "mouse1", "BC_distance", "mouse1_source", "mouse1_age", "mouse1_ID", "mouse2_source", "mouse2_age", "mouse2_ID")
+distance <- na.omit(distance)
+distance <- distance[distance$mouse1_source==distance$mouse2_source, ] # 104641 Now I have a dataframe with wild-wild and lab-lab mouse pairs with known body mass (wild) or chrono age (lab), with BC distance measured for each pair.
+distance <- distance[distance$mouse1!=distance$mouse2, ] # removing self-comparisons
+distance <- distance[which(distance$mouse1_source=="Lab" | distance$mouse2_source=="Lab" | distance$mouse1_ID!=distance$mouse2_ID),] # further removing self-comparisons in wild mice 
+self <- distance[which(distance$mouse1_ID==distance$mouse2_ID),]
+unique(self$mouse1_ID) # "0" --> these are lab mice. only one sample per ID, so they didn't have IDs. so it is all good
+
+# Bins: just two bins per group; starting with lab
+distance$age_bin1[distance$mouse1_source=="Lab"] <- "A" 
+distance$age_bin1[distance$mouse1_source=="Lab" & distance$mouse1_age>13.3] <- "B"
+distance$age_bin1[distance$mouse1_source=="Lab" & distance$mouse1_age>23.3] <- "C"
+distance$age_bin2[distance$mouse2_source=="Lab"] <- "A"
+distance$age_bin2[distance$mouse2_source=="Lab" & distance$mouse2_age>13.3] <- "B"
+distance$age_bin2[distance$mouse2_source=="Lab" & distance$mouse2_age>23.3] <- "C"
+# wild:
+distance$age_bin1[distance$mouse1_source=="Wild"] <- "D"
+distance$age_bin1[distance$mouse1_source=="Wild" & distance$mouse1_age>13.3] <- "E"
+distance$age_bin1[distance$mouse1_source=="Wild" & distance$mouse1_age>23.3] <- "F"
+distance$age_bin2[distance$mouse2_source=="Wild"] <- "D"
+distance$age_bin2[distance$mouse2_source=="Wild" & distance$mouse2_age>13.3] <- "E"
+distance$age_bin2[distance$mouse2_source=="Wild" & distance$mouse2_age>23.3] <- "F"
+# Now including only rows where age bins are equal
+distance <- distance[distance$age_bin1==distance$age_bin2, ] # 40466
+
+# Add small bins:
+# Create breaks for the 9 bins based on the specified ranges
+breaks <- c(3.49, 6.78888888888889, 10.0777777777778, 13.3666666666667, 16.6555555555556,
+            19.9444444444444, 23.2333333333333, 26.5222222222222, 29.8111111111111, 33.1)
+
+# Add 'small_bin' column using cut function
+lll <- distance[which(distance$mouse1_source=="Lab"),]
+www <- distance[which(distance$mouse1_source=="Wild"),]
+lll$small_bin1 <- cut(lll$mouse1_age, breaks = breaks, labels = c("A", "B", "C", "D", "E", "F", "G", "H", "I"))
+lll$small_bin2 <- cut(lll$mouse1_age, breaks = breaks, labels = c("A", "B", "C", "D", "E", "F", "G", "H", "I"))
+www$small_bin1 <- cut(www$mouse2_age, breaks = breaks, labels = c("J", "K", "L", "M", "N", "O", "P", "Q", "R"))
+www$small_bin2 <- cut(www$mouse2_age, breaks = breaks, labels = c("J", "K", "L", "M", "N", "O", "P", "Q", "R"))
+distance2 <- rbind(lll, www)
+
+distance2 <- distance2[distance2$small_bin1==distance2$small_bin2, ] # 104530
+
+### Wilcoxon tests with permutations to check if differences between bins (within source) are significant
+
+# LAB bins A and B
+l1_2 <- distance[which(distance$mouse1_source=="Lab" & distance$age_bin1=="A" | distance$mouse1_source=="Lab" & distance$age_bin1=="B"),]
+#Get observed u-statistic
+set.seed(86574)
+u.obs<-wilcox.test(BC_distance ~ age_bin1, data=l1_2)
+u.obs # W = 25154, p-value = 9.748e-15
+u.obs.stat <- u.obs$statistic
+
+#do permutation test
+Nperm<-1000
+perm1<-data.frame(permutation=1:Nperm, u.stat=NA)
+head(perm1) 
+
+lose<-"BC_distance"
+for (i in 1:Nperm) {
+  d<-l1_2[,!names(l1_2) %in% lose]
+  d$dist.rand<-sample(l1_2$BC_distance, length(l1_2$BC_distance), replace=F)
+  x<-wilcox.test(dist.rand ~ age_bin1, data=d)
+  perm1$u.stat[i]<-x$statistic
+}
+
+head(perm1)
+hist(perm1$u.stat)
+abline(v=u.obs$statistic, col="red", lwd=2, lty=2)
+
+perm1$result<-ifelse(perm1$u.stat>u.obs$statistic, 1, 0)
+perm1$result # all lower than observed
+p<-mean(perm1$result)
+pval<-2*p
+pval # 0
+
+# LAB bins B and C
+l2_3 <- distance[which(distance$mouse1_source=="Lab" & distance$age_bin1=="B" | distance$mouse1_source=="Lab" & distance$age_bin1=="C"),]
+#Get observed u-statistic
+u.obs<-wilcox.test(BC_distance ~ age_bin1, data=l2_3)
+u.obs # W = 540, p-value = 5.046e-06
+u.obs.stat <- u.obs$statistic
+
+#do permutation test
+Nperm<-1000
+perm1<-data.frame(permutation=1:Nperm, u.stat=NA)
+head(perm1) 
+
+lose<-"BC_distance"
+for (i in 1:Nperm) {
+  d<-l2_3[,!names(l2_3) %in% lose]
+  d$dist.rand<-sample(l2_3$BC_distance, length(l2_3$BC_distance), replace=F)
+  x<-wilcox.test(dist.rand ~ age_bin1, data=d)
+  perm1$u.stat[i]<-x$statistic
+}
+
+head(perm1)
+hist(perm1$u.stat)
+abline(v=u.obs$statistic, col="red", lwd=2, lty=2)
+
+perm1$result<-ifelse(perm1$u.stat<u.obs$statistic, 1, 0)
+p<-mean(perm1$result)
+pval<-2*p
+pval # 0
+
+# LAB bins A and C
+l1_3 <- distance[which(distance$mouse1_source=="Lab" & distance$age_bin1=="A" | distance$mouse1_source=="Lab" & distance$age_bin1=="C"),]
+#Get observed u-statistic
+u.obs<-wilcox.test(BC_distance ~ age_bin1, data=l1_3)
+u.obs # W = 15106, p-value = 0.001049
+u.obs.stat <- u.obs$statistic
+
+#do permutation test
+Nperm<-1000
+perm1<-data.frame(permutation=1:Nperm, u.stat=NA)
+head(perm1) 
+
+lose<-"BC_distance"
+for (i in 1:Nperm) {
+  d<-l1_3[,!names(l1_3) %in% lose]
+  d$dist.rand<-sample(l1_3$BC_distance, length(l1_3$BC_distance), replace=F)
+  x<-wilcox.test(dist.rand ~ age_bin1, data=d)
+  perm1$u.stat[i]<-x$statistic
+}
+
+head(perm1)
+hist(perm1$u.stat)
+abline(v=u.obs$statistic, col="red", lwd=2, lty=2)
+
+perm1$result<-ifelse(perm1$u.stat>u.obs$statistic, 1, 0)
+p<-mean(perm1$result)
+pval<-2*p
+pval # 0.002
+
+# WILD bins D and E
+w1_2 <- distance[which(distance$mouse1_source=="Wild" & distance$age_bin1=="D" | distance$mouse1_source=="Wild" & distance$age_bin1=="E"),]
+#Get observed u-statistic
+u.obs<-wilcox.test(BC_distance ~ age_bin1, data=w1_2)
+u.obs #W = 300861768, p-value < 2.2e-16
+u.obs.stat <- u.obs$statistic
+
+#do permutation test
+Nperm<-1000
+perm1<-data.frame(permutation=1:Nperm, u.stat=NA)
+head(perm1) 
+
+lose<-"BC_distance"
+for (i in 1:Nperm) {
+  d<-w1_2[,!names(w1_2) %in% lose]
+  d$dist.rand<-sample(w1_2$BC_distance, length(w1_2$BC_distance), replace=F)
+  x<-wilcox.test(dist.rand ~ age_bin1, data=d)
+  perm1$u.stat[i]<-x$statistic
+}
+
+head(perm1)
+hist(perm1$u.stat)
+abline(v=u.obs$statistic, col="red", lwd=2, lty=2)
+
+perm1$result<-ifelse(perm1$u.stat>u.obs$statistic, 1, 0)
+p<-mean(perm1$result)
+pval<-2*p
+pval # 0
+
+# WILD bins D and F
+w1_2 <- distance[which(distance$mouse1_source=="Wild" & distance$age_bin1=="D" | distance$mouse1_source=="Wild" & distance$age_bin1=="F"),]
+#Get observed u-statistic
+u.obs<-wilcox.test(BC_distance ~ age_bin1, data=w1_2)
+u.obs # W = 10746430, p-value < 2.2e-16
+u.obs.stat <- u.obs$statistic
+
+#do permutation test
+Nperm<-1000
+perm1<-data.frame(permutation=1:Nperm, u.stat=NA)
+head(perm1) 
+
+lose<-"BC_distance"
+for (i in 1:Nperm) {
+  d<-w1_2[,!names(w1_2) %in% lose]
+  d$dist.rand<-sample(w1_2$BC_distance, length(w1_2$BC_distance), replace=F)
+  x<-wilcox.test(dist.rand ~ age_bin1, data=d)
+  perm1$u.stat[i]<-x$statistic
+}
+
+head(perm1)
+hist(perm1$u.stat)
+abline(v=u.obs$statistic, col="red", lwd=2, lty=2)
+
+perm1$result<-ifelse(perm1$u.stat>u.obs$statistic, 1, 0)
+p<-mean(perm1$result)
+pval<-2*p
+pval # 0
+
+# Plotting - big bins
+plot <- ggplot(data = distance, aes(x = age_bin1, y = BC_distance, fill = mouse1_source)) +
+     scale_fill_manual(values=c("#69A2B0", "#69A56B")) +
+   geom_point( shape = 21,size=1.5, stroke=0.1,position = position_jitterdodge(),alpha=.8)+ 
+     geom_boxplot(notch = TRUE,  outlier.size = -1, color="black",lwd=1.2, alpha = 0.6) +
+    geom_violin(alpha=0.4, position = position_dodge(width = .75),size=1,color="black", lwd=1.2) +
+      theme_minimal()  + 
+  ylab(  c("Jaccard dissimilarity")  )  +
+     remove("legend.title")+
+     theme(axis.ticks = element_line(size=2,color="black"),
+           axis.ticks.length=unit(0.2,"cm"),
+           axis.text.x = element_text(size=40),
+           axis.text.y = element_text(size=25),
+           axis.title.y = element_text(size=35),
+           legend.position = "none", 
+    panel.grid.major = element_blank(),  # Remove major grid lines
+    panel.grid.minor = element_blank() ) + 
+            geom_signif(comparisons = list(c("A", "B")), annotation = "***",
+              map_signif_level=TRUE, size = .7, textsize = 8) +
+  geom_signif(comparisons = list(c("A", "C")), annotation = "*", # *=0.002, ***<0.001
+              map_signif_level=TRUE, size = .7, textsize = 8, y_position = 1.05) +
+  geom_signif(comparisons = list(c("D", "E")), annotation = "***",
+              map_signif_level=TRUE, size = .7, textsize = 8) +
+  geom_signif(comparisons = list(c("D", "F")), annotation = "***",
+              map_signif_level=TRUE, size = .7, textsize = 8, y_position = 1.05)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("beta_box.png", plot=p, width = 6, height = 10)
+
+####### Repeating with Aitchison dissimilarity
+
+# Measure
+
+age_clr <- microbiome::transform(age, "clr")
+D <- phyloseq::distance(age_clr, method = "euclidean", type = "samples")
+D <- as.matrix(D)
+D_melt <- melt(D)
+sd <- data.frame(sample_data(age))
+sd <- sd[,c("Source", "chrono_age", "Body_mass_g", "Animal_ID")]
+sd$Mouse <- rownames(sd)
+sd$Mouse_age <- sd$Body_mass_g
+sd$Mouse_age <- ifelse(is.na(sd$Mouse_age), sd$Body_mass_g, sd$Mouse_age)
+sd <- sd[,c("Source", "Mouse", "Mouse_age", "Animal_ID")]
+sd <- na.omit(sd)
+colnames(D_melt) <- c("mouse1", "mouse2", "BC_distance")
+distance <- merge(D_melt, sd, by.x="mouse1", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse1", "mouse2", "BC_distance", "mouse1_source", "mouse1_age", "mouse1_ID")
+distance <- merge(distance, sd, by.x="mouse2", by.y="Mouse", all.x = TRUE, all.y=FALSE)
+colnames(distance) <- c("mouse2", "mouse1", "BC_distance", "mouse1_source", "mouse1_age", "mouse1_ID", "mouse2_source", "mouse2_age", "mouse2_ID")
+distance <- na.omit(distance)
+distance <- distance[distance$mouse1_source==distance$mouse2_source, ] # 104641 Now I have a dataframe with wild-wild and lab-lab mouse pairs with known body mass (wild) or chrono age (lab), with BC distance measured for each pair.
+distance <- distance[distance$mouse1!=distance$mouse2, ] # removing self-comparisons
+distance <- distance[which(distance$mouse1_source=="Lab" | distance$mouse2_source=="Lab" | distance$mouse1_ID!=distance$mouse2_ID),] # further removing self-comparisons in wild mice 
+self <- distance[which(distance$mouse1_ID==distance$mouse2_ID),]
+unique(self$mouse1_ID) # "0" --> these are lab mice. only one sample per ID, so they didn't have IDs. so it is all good
+
+# Bins: just two bins per group; starting with lab
+distance$age_bin1[distance$mouse1_source=="Lab"] <- "A" 
+distance$age_bin1[distance$mouse1_source=="Lab" & distance$mouse1_age>13.3] <- "B"
+distance$age_bin1[distance$mouse1_source=="Lab" & distance$mouse1_age>23.3] <- "C"
+distance$age_bin2[distance$mouse2_source=="Lab"] <- "A"
+distance$age_bin2[distance$mouse2_source=="Lab" & distance$mouse2_age>13.3] <- "B"
+distance$age_bin2[distance$mouse2_source=="Lab" & distance$mouse2_age>23.3] <- "C"
+# wild:
+distance$age_bin1[distance$mouse1_source=="Wild"] <- "D"
+distance$age_bin1[distance$mouse1_source=="Wild" & distance$mouse1_age>13.3] <- "E"
+distance$age_bin1[distance$mouse1_source=="Wild" & distance$mouse1_age>23.3] <- "F"
+distance$age_bin2[distance$mouse2_source=="Wild"] <- "D"
+distance$age_bin2[distance$mouse2_source=="Wild" & distance$mouse2_age>13.3] <- "E"
+distance$age_bin2[distance$mouse2_source=="Wild" & distance$mouse2_age>23.3] <- "F"
+# Now including only rows where age bins are equal
+distance <- distance[distance$age_bin1==distance$age_bin2, ] # 40466
+
+# Add small bins:
+# Create breaks for the 9 bins based on the specified ranges
+breaks <- c(3.49, 6.78888888888889, 10.0777777777778, 13.3666666666667, 16.6555555555556,
+            19.9444444444444, 23.2333333333333, 26.5222222222222, 29.8111111111111, 33.1)
+
+# Add 'small_bin' column using cut function
+lll <- distance[which(distance$mouse1_source=="Lab"),]
+www <- distance[which(distance$mouse1_source=="Wild"),]
+lll$small_bin1 <- cut(lll$mouse1_age, breaks = breaks, labels = c("A", "B", "C", "D", "E", "F", "G", "H", "I"))
+lll$small_bin2 <- cut(lll$mouse1_age, breaks = breaks, labels = c("A", "B", "C", "D", "E", "F", "G", "H", "I"))
+www$small_bin1 <- cut(www$mouse2_age, breaks = breaks, labels = c("J", "K", "L", "M", "N", "O", "P", "Q", "R"))
+www$small_bin2 <- cut(www$mouse2_age, breaks = breaks, labels = c("J", "K", "L", "M", "N", "O", "P", "Q", "R"))
+distance2 <- rbind(lll, www)
+
+distance2 <- distance2[distance2$small_bin1==distance2$small_bin2, ] # 104530
+
+### Wilcoxon tests with permutations to check if differences between bins (within source) are significant
+
+# LAB bins A and B
+l1_2 <- distance[which(distance$mouse1_source=="Lab" & distance$age_bin1=="A" | distance$mouse1_source=="Lab" & distance$age_bin1=="B"),]
+#Get observed u-statistic
+u.obs<-wilcox.test(BC_distance ~ age_bin1, data=l1_2)
+u.obs # W = 17988, p-value = 0.04326
+u.obs.stat <- u.obs$statistic
+
+#do permutation test
+Nperm<-1000
+perm1<-data.frame(permutation=1:Nperm, u.stat=NA)
+head(perm1) 
+
+lose<-"BC_distance"
+for (i in 1:Nperm) {
+  d<-l1_2[,!names(l1_2) %in% lose]
+  d$dist.rand<-sample(l1_2$BC_distance, length(l1_2$BC_distance), replace=F)
+  x<-wilcox.test(dist.rand ~ age_bin1, data=d)
+  perm1$u.stat[i]<-x$statistic
+}
+
+head(perm1)
+hist(perm1$u.stat)
+abline(v=u.obs$statistic, col="red", lwd=2, lty=2)
+
+perm1$result<-ifelse(perm1$u.stat>u.obs$statistic, 1, 0)
+perm1$result # all lower than observed
+p<-mean(perm1$result)
+pval<-2*p
+pval # 0.034
+
+# LAB bins B and C
+l2_3 <- distance[which(distance$mouse1_source=="Lab" & distance$age_bin1=="B" | distance$mouse1_source=="Lab" & distance$age_bin1=="C"),]
+#Get observed u-statistic
+u.obs<-wilcox.test(BC_distance ~ age_bin1, data=l2_3)
+u.obs # W = 808, p-value = 0.008324
+u.obs.stat <- u.obs$statistic
+
+#do permutation test
+Nperm<-1000
+perm1<-data.frame(permutation=1:Nperm, u.stat=NA)
+head(perm1) 
+
+lose<-"BC_distance"
+for (i in 1:Nperm) {
+  d<-l2_3[,!names(l2_3) %in% lose]
+  d$dist.rand<-sample(l2_3$BC_distance, length(l2_3$BC_distance), replace=F)
+  x<-wilcox.test(dist.rand ~ age_bin1, data=d)
+  perm1$u.stat[i]<-x$statistic
+}
+
+head(perm1)
+hist(perm1$u.stat)
+abline(v=u.obs$statistic, col="red", lwd=2, lty=2)
+
+perm1$result<-ifelse(perm1$u.stat<u.obs$statistic, 1, 0)
+p<-mean(perm1$result)
+pval<-2*p
+pval # 0.012
+
+# LAB bins A and C
+l1_3 <- distance[which(distance$mouse1_source=="Lab" & distance$age_bin1=="A" | distance$mouse1_source=="Lab" & distance$age_bin1=="C"),]
+#Get observed u-statistic
+u.obs<-wilcox.test(BC_distance ~ age_bin1, data=l1_3)
+u.obs # W = 9620, p-value = 0.06594
+u.obs.stat <- u.obs$statistic
+
+#do permutation test
+Nperm<-1000
+perm1<-data.frame(permutation=1:Nperm, u.stat=NA)
+head(perm1) 
+
+lose<-"BC_distance"
+for (i in 1:Nperm) {
+  d<-l1_3[,!names(l1_3) %in% lose]
+  d$dist.rand<-sample(l1_3$BC_distance, length(l1_3$BC_distance), replace=F)
+  x<-wilcox.test(dist.rand ~ age_bin1, data=d)
+  perm1$u.stat[i]<-x$statistic
+}
+
+head(perm1)
+hist(perm1$u.stat)
+abline(v=u.obs$statistic, col="red", lwd=2, lty=2)
+
+perm1$result<-ifelse(perm1$u.stat<u.obs$statistic, 1, 0)
+p<-mean(perm1$result)
+pval<-2*p
+pval # 0.066
+
+# WILD bins D and E
+w1_2 <- distance[which(distance$mouse1_source=="Wild" & distance$age_bin1=="D" | distance$mouse1_source=="Wild" & distance$age_bin1=="E"),]
+#Get observed u-statistic
+u.obs<-wilcox.test(BC_distance ~ age_bin1, data=w1_2)
+u.obs # W = 145515252, p-value < 2.2e-16
+u.obs.stat <- u.obs$statistic
+
+#do permutation test
+Nperm<-1000
+perm1<-data.frame(permutation=1:Nperm, u.stat=NA)
+head(perm1) 
+
+lose<-"BC_distance"
+for (i in 1:Nperm) {
+  d<-w1_2[,!names(w1_2) %in% lose]
+  d$dist.rand<-sample(w1_2$BC_distance, length(w1_2$BC_distance), replace=F)
+  x<-wilcox.test(dist.rand ~ age_bin1, data=d)
+  perm1$u.stat[i]<-x$statistic
+}
+
+head(perm1)
+hist(perm1$u.stat)
+abline(v=u.obs$statistic, col="red", lwd=2, lty=2)
+
+perm1$result<-ifelse(perm1$u.stat<u.obs$statistic, 1, 0)
+p<-mean(perm1$result)
+pval<-2*p
+pval # 0
+
+# WILD bins D and F
+w1_2 <- distance[which(distance$mouse1_source=="Wild" & distance$age_bin1=="D" | distance$mouse1_source=="Wild" & distance$age_bin1=="F"),]
+#Get observed u-statistic
+u.obs<-wilcox.test(BC_distance ~ age_bin1, data=w1_2)
+u.obs # W = 5848976, p-value < 2.2e-16
+u.obs.stat <- u.obs$statistic
+
+#do permutation test
+Nperm<-1000
+perm1<-data.frame(permutation=1:Nperm, u.stat=NA)
+head(perm1) 
+
+lose<-"BC_distance"
+for (i in 1:Nperm) {
+  d<-w1_2[,!names(w1_2) %in% lose]
+  d$dist.rand<-sample(w1_2$BC_distance, length(w1_2$BC_distance), replace=F)
+  x<-wilcox.test(dist.rand ~ age_bin1, data=d)
+  perm1$u.stat[i]<-x$statistic
+}
+
+head(perm1)
+hist(perm1$u.stat)
+abline(v=u.obs$statistic, col="red", lwd=2, lty=2)
+
+perm1$result<-ifelse(perm1$u.stat<u.obs$statistic, 1, 0)
+p<-mean(perm1$result)
+pval<-2*p
+pval # 0
+
+# Plotting - big bins
+plot <- ggplot(data = distance, aes(x = age_bin1, y = BC_distance, fill = mouse1_source)) +
+     scale_fill_manual(values=c("#69A2B0", "#69A56B")) +
+   geom_point( shape = 21,size=1.5, stroke=0.1,position = position_jitterdodge(),alpha=.8)+ 
+     geom_boxplot(notch = TRUE,  outlier.size = -1, color="black",lwd=1.2, alpha = 0.6) +
+    geom_violin(alpha=0.4, position = position_dodge(width = .75),size=1,color="black", lwd=1.2) +
+      theme_minimal()  + 
+  ylab(  c("Aitchison dissimilarity")  )  +
+     remove("legend.title")+
+     theme(axis.ticks = element_line(size=2,color="black"),
+           axis.ticks.length=unit(0.2,"cm"),
+           axis.text.x = element_text(size=40),
+           axis.text.y = element_text(size=25),
+           axis.title.y = element_text(size=35),
+           legend.position = "none", 
+    panel.grid.major = element_blank(),  # Remove major grid lines
+    panel.grid.minor = element_blank() ) 
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("beta_box_AIT.png", plot=p, width = 6, height = 10)
+
+```
+
+Do lab and wild mice share taxa-specific patterns?
+
+```{r}
+
+age <- readRDS("phy.rds") 
+
+# Save source data
+source <- age
+df <- data.frame(sample_data(source))
+df <- df[,c("Source", "IMR_code", "chrono_age", "Body_mass_g")]
+rownames(df) <- df$IMR_code
+sample_data(source) <- df
+saveRDS(source, "Source_data_Assembly_FIG3.rds")
+
+pseq <- age
+df <- as.data.frame(lapply(sample_data(pseq),function (y) if(class(y)!="factor" ) as.factor(y) else y),stringsAsFactors=T)
+row.names(df) <- sample_names(pseq)
+sample_data(pseq) <- sample_data(df)
+pseq_loc <- merge_samples(pseq, "Source", fun="mean") 
+pseq_loc # 8408 taxa, 2 samples
+comp <- microbiome::transform(pseq_loc, "compositional")
+phylum <- comp %>% tax_glom(taxrank = "Phylum") %>% psmelt()
+phylum_min <- phylum[c("Source", "Abundance", "Phylum")]
+phylum_min$Abundance <- round(phylum_min$Abundance, digits=4) 
+
+###### PHYLUM
+
+library(RColorBrewer)
+nb.cols <- 25
+mycolors <- colorRampPalette(brewer.pal(8, "Dark2"))(nb.cols)
+set.seed(3856) #
+mixed <- sample(mycolors)
+colors <- c("#2A4849", "#88A09E", "#704C5E", "#CB8364")
+newcolors <- c( "#84A59D", "#F28482", "#e0a604")
+lab_colors <- c("#84A59D","#F28482", "#e0a604")
+library(geomtextpath)
+
+# Wild mice:
+wild <- subset_samples(pseq, Source=="Wild")
+sample_data(wild)$Body_mass_g <- as.numeric(as.character(sample_data(wild)$Body_mass_g))
+wild <- wild %>%
+  aggregate_taxa(level = "Phylum") 
+wild <- aggregate_rare(wild, level = "Phylum", detection = 0.02, prevalence = .02)
+wild_phyla <- psmelt(wild)
+wild_phyla <- wild_phyla[which(wild_phyla$OTU=="Firmicutes" | wild_phyla$OTU=="Bacteroidota" | wild_phyla$OTU=="Proteobacteria"),]
+unique(wild_phyla$OTU) #  "Firmicutes"     "Proteobacteria" "Bacteroidota" 
+
+p <- ggplot(wild_phyla, aes(x = Body_mass_g, y = Abundance, label = OTU, fill = OTU, colour = OTU, group = interaction(OTU, OTU))) +
+  stat_smooth(method = loess, size = 0, span = .6, aes(color = OTU), se = TRUE) + 
+  geom_textsmooth(method = "loess", size = 8, hjust = 0.98, linewidth = 1.5, aes(color = OTU, fontface = 2), se = TRUE) +
+  scale_fill_manual(values = newcolors) +
+  theme_minimal() +
+  ylab("Relative abundance") +
+  xlab("Body mass (g)") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+  labs(title = "") +
+  theme(legend.position = "none", axis.title = element_text(size = 30), axis.text.x = element_text(size = 25), axis.text.y = element_text(size = 25)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  scale_x_continuous(breaks = c(5,10,15, 20,25, 30)) +
+  expand_limits(x = c(10, 30))
+plot <- p + scale_colour_manual(values = newcolors)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("phyla_wild.png", plot=p, width = 7, height = 7)
+
+# Lab mice:
+lab <- subset_samples(pseq, Source=="Lab")
+sample_data(lab)$Body_mass_g <- as.numeric(as.character(sample_data(lab)$Body_mass_g))
+lab <- lab %>%
+  aggregate_taxa(level = "Phylum") 
+lab <- aggregate_rare(lab, level = "Phylum", detection = 0.02, prevalence = .02)
+lab_phyla <- psmelt(lab)
+unique(lab_phyla$OTU)
+lab_phyla <- lab_phyla[which(lab_phyla$OTU!="Other"),]
+lab_phyla <- lab_phyla[which(lab_phyla$OTU!="Deferribacterota"),]
+lab_phyla <- lab_phyla[which(lab_phyla$OTU!="Verrucomicrobiota"),]
+lab_phyla <- lab_phyla[which(lab_phyla$OTU!="Desulfobacterota"),]
+lab_phyla <- lab_phyla[which(lab_phyla$OTU!="Actinobacteriota"),]
+
+p <- ggplot(lab_phyla, aes(x = Body_mass_g, y = Abundance, label = OTU, fill = OTU, colour = OTU, group = interaction(OTU, OTU))) +
+  stat_smooth(method = loess, size = 0, span = .6, aes(color = OTU), se = TRUE) + 
+  geom_textsmooth(method = "loess", size = 8, hjust = 0.8, linewidth = 1.5, aes(color = OTU, fontface = 2), se = TRUE) +
+  scale_fill_manual(values = newcolors) +
+  theme_minimal() +
+  ylab("Relative abundance") +
+  xlab("Body mass (g)") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+  labs(title = "") +
+  theme(legend.position = "none", axis.title = element_text(size = 30), axis.text.x = element_text(size = 25), axis.text.y = element_text(size = 25)) + scale_x_continuous(breaks = c(5,10,15, 20,25, 30)) +
+  coord_cartesian(ylim = c(0, 1))
+plot <- p + scale_colour_manual(values = lab_colors)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("phyla_lab.png", plot=p, width = 7, height = 7)
+
+# only weaned lab mice
+weaned <- lab_phyla[which(lab_phyla$weaned==TRUE),] 
+p <- ggplot(weaned, aes(x = Body_mass_g, y = Abundance, label = OTU, fill = OTU, colour = OTU, group = interaction(OTU, OTU))) +
+  stat_smooth(method = loess, size = 0, span = .6, aes(color = OTU), se = TRUE) + 
+  geom_textsmooth(method = "loess", size = 8, hjust = 0.8, linewidth = 1.5, aes(color = OTU, fontface = 2), se = TRUE) +
+  scale_fill_manual(values = newcolors) +
+  theme_minimal() +
+  ylab("Relative abundance") +
+  xlab("Body mass (g)") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+  labs(title = "") +
+  theme(legend.position = "none", axis.title = element_text(size = 30), axis.text.x = element_text(size = 25), axis.text.y = element_text(size = 25)) +
+  coord_cartesian(ylim = c(0, 1)) + scale_x_continuous(breaks=c(8, 10, 15, 20, 25, 30))
+plot <- p + scale_colour_manual(values = lab_colors)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("phyla_lab_WEANED.png", plot=p, width = 7, height = 7)
+
+# ASV richness in predominant phyla
+
+# wild 
+wild <- subset_samples(pseq, Source=="Wild")
+sample_data(wild)$Body_mass_g <- as.numeric(as.character(sample_data(wild)$Body_mass_g))
+wild <- prune_taxa(taxa_sums(wild) > 0, wild)
+taxa <- wild %>% psmelt()
+taxa <- taxa[which(taxa$Phylum=="Firmicutes" | taxa$Phylum=="Bacteroidota" | taxa$Phylum=="Proteobacteria"),] 
+library(plyr)
+taxa <- taxa[which(taxa$Abundance>0),]
+counts <- ddply(taxa, .(taxa$trapdate, taxa$Phylum), nrow)
+names(counts) <- c("trapdate", "Phylum", "Freq")
+#counts <- counts %>% pivot_wider(names_from = Phylum, values_from = Freq)
+meta <- data.frame(sample_data(wild))
+meta_wild <- merge(meta, counts, by="trapdate")
+newcolors <- c( "#84A59D", "#F28482", "#e0a604")
+
+p <- ggplot(meta_wild, aes(x=Body_mass_g, y=Freq, label=Phylum, fill=Phylum, colour=Phylum, group = interaction(Phylum, Phylum))) +
+            stat_smooth(method=loess, size=0, span=.6,aes (color=Phylum), se=TRUE) + 
+            geom_textsmooth(method="loess", size=8, hjust=0.4, linewidth=1.5, aes(color=Phylum, fontface=2), se=FALSE) +
+            scale_fill_manual(values = newcolors) +
+            theme_minimal() +
+            ylab(c("ASV richness")) +
+            xlab(c("Body mass (g)")) +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+            labs(title = "") +
+            theme(legend.position = "none", axis.title = element_text(size = 40), axis.text.x = element_text(size = 25), axis.text.y = element_text(size=25)) + coord_cartesian(ylim = c(0, 250)) +
+            scale_x_continuous(breaks = scales::pretty_breaks(n = 6)) +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) +
+  expand_limits(x = c(10, 30))
+plot <- p + scale_colour_manual(values = newcolors)
+p1 <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("ASV_wild.png", plot=p1, width = 7, height = 7)
+
+# lab 
+lab <- subset_samples(pseq, Source=="Lab")
+sample_data(lab)$Body_mass_g <- as.numeric(as.character(sample_data(lab)$Body_mass_g))
+lab <- prune_taxa(taxa_sums(lab) > 0, lab)
+taxa <- lab %>% psmelt()
+taxa <- taxa[which(taxa$Phylum=="Firmicutes" | taxa$Phylum=="Bacteroidota" | taxa$Phylum=="Proteobacteria"),] 
+library(plyr)
+taxa <- taxa[which(taxa$Abundance>0),]
+counts <- ddply(taxa, .(taxa$EB_code, taxa$Phylum), nrow)
+names(counts) <- c("EB_code", "Phylum", "Freq")
+#counts <- counts %>% pivot_wider(names_from = Phylum, values_from = Freq)
+meta <- data.frame(sample_data(lab))
+meta_x <- merge(meta, counts, by="EB_code")
+lab_colors <- c( "#84A59D", "#F28482", "#e0a604")
+
+p <- ggplot(meta_x, aes(x=Body_mass_g, y=Freq, label=Phylum, fill=Phylum, colour=Phylum, group = interaction(Phylum, Phylum))) +
+       coord_cartesian(ylim = c(0, 200)) +
+            stat_smooth(method=loess, size=0, span=.6,aes (color=Phylum), se=TRUE) + 
+            geom_textsmooth(method="loess", size=8, hjust=0.7, linewidth=1.5, aes(color=Phylum, fontface=2), se=FALSE) +
+            scale_fill_manual(values = lab_colors) +
+            theme_minimal() +
+            ylab(c("ASV richness")) +
+            xlab(c("Age (days)")) +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+            labs(title = "") +
+            theme(legend.position = "none", axis.title = element_text(size = 40), axis.text.x = element_text(size = 25), axis.text.y = element_text(size=25)) + coord_cartesian(ylim = c(0, 250)) +
+            scale_x_continuous(breaks = scales::pretty_breaks(n = 6))  +
+  scale_x_continuous(breaks = c(5, 10,15, 20, 25,30)) +
+  expand_limits(x = c(10, 30))
+plot <- p + scale_colour_manual(values = lab_colors)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("ASV_lab.png", plot=p, width = 7, height = 7)
+
+# only weaned lab mice
+weaned <- meta_x[which(meta_x$weaned==TRUE),] 
+p <- ggplot(weaned, aes(x=Body_mass_g, y=Freq, label=Phylum, fill=Phylum, colour=Phylum, group = interaction(Phylum, Phylum))) +
+       coord_cartesian(ylim = c(0, 200)) +
+            stat_smooth(method=loess, size=0, span=.6,aes (color=Phylum), se=TRUE) + 
+            geom_textsmooth(method="loess", size=8, hjust=0.7, linewidth=1.5, aes(color=Phylum, fontface=2), se=FALSE) +
+            scale_fill_manual(values = lab_colors) +
+            theme_minimal() +
+            ylab(c("ASV richness")) +
+            xlab(c("Age (days)")) +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+            labs(title = "") +
+            theme(legend.position = "none", axis.title = element_text(size = 40), axis.text.x = element_text(size = 25), axis.text.y = element_text(size=25)) + coord_cartesian(ylim = c(0, 250)) +
+            scale_x_continuous(breaks = scales::pretty_breaks(n = 6))  +
+  scale_x_continuous(breaks = c(8, 10,15, 20, 25,30)) +
+  expand_limits(x = c(10, 30))
+plot <- p + scale_colour_manual(values = lab_colors)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("ASV_lab_WEANED.png", plot=p, width = 7, height = 7)
+
+# Changes in genera from (A) Firmicutes and (B) Bacteroidota, coloured by aerotolerance
+wild <- subset_samples(pseq, Source=="Wild")
+sample_data(wild)$Body_mass_g <- as.numeric(as.character(sample_data(wild)$Body_mass_g))
+wild <- wild %>%
+  aggregate_taxa(level = "Genus") %>%  
+  microbiome::transform(transform = "compositional")
+#wild <- aggregate_rare(wild, level = "Genus", detection = 0.02, prevalence = .05)
+wild <- subset_taxa(wild, Phylum=="Firmicutes" | Phylum=="Bacteroidota" | Phylum=="Proteobacteria")
+wild_phyla <- psmelt(wild)
+pheno <-read.csv("Assembly_chapter_bacterial_phenotypes_FINISHED.csv")
+pheno <- pheno[,c("Family","Genus", "Aerotolerance_cat")]
+pheno <- pheno[which(pheno$Genus!="Other"),]
+pheno$Aerotolerance_cat[pheno$Aerotolerance_cat=="nonaerotolerant"] <- "anaerobe"
+pheno$Aerotolerance_cat[pheno$Aerotolerance_cat=="nonaeotolerant"] <- "unknown"
+pheno$Aerotolerance_cat[pheno$Aerotolerance_cat=="mixed"] <- "anaerobe"
+wild_phe <- merge(wild_phyla, pheno, by="Genus", all.x=TRUE, all.y=FALSE)
+
+# Now checking if I can determine aerotolerance from family-level taxa info for those that have unknown genus level taxa. 
+unknown_genus <- wild_phe[which(wild_phe$Genus=="Other"),]
+unknown_genus <- unknown_genus[,c("Family.x", "Genus")]
+unknown_genus <- unknown_genus[!duplicated(unknown_genus),] # 65
+unknown_genus <- unknown_genus[which(unknown_genus$Family.x!="Other"),] # 64
+# Going to extract these families and make an excel spreadsheet with references.
+#write.csv(unknown_genus, "Unknown_genus_families_wild.csv")
+wild_unknown <- unknown_genus
+
+# Add aerotolerance at family level for those that don't have it at genus level
+famaero <- read.csv("Unknown_genus_families_wild_aero.csv")
+wild_phe$Aerotolerance_cat <- ifelse(is.na(wild_phe$Aerotolerance_cat), "unknown", wild_phe$Aerotolerance_cat)
+unique(wild_phe$Aerotolerance_cat) # "anaerobe"     "aerotolerant" "unknown"    
+famaero <- famaero[,c("Family", "Aerotolerance_cat")]
+colnames(famaero) <- c("famfam", "aeroaero")
+wild_phe <- merge(wild_phe, famaero, by.x="Family.x", by.y="famfam", all.x=TRUE, all.y=FALSE)
+table(wild_phe$Aerotolerance_cat) # 73944 unknown
+wild_phe$Aerotolerance_cat[wild_phe$Aerotolerance_cat=="unknown"] <- wild_phe$aeroaero
+table(wild_phe$Aerotolerance_cat) #  23226 unknown, 7110 mixed
+wild_phe$Aerotolerance_cat[wild_phe$Aerotolerance_cat=="mixed"] <- "unknown"
+wild_phe$Aerotolerance_cat[wild_phe$Aerotolerance_cat=="Unknown"] <- "unknown"
+wild_phe$Aerotolerance_cat[wild_phe$Aerotolerance_cat=="nonaerotolerant"] <- "anaerobe"
+table(wild_phe$Aerotolerance_cat) # 30336 unknown
+
+wild_phe$extra <- "unknown"
+wild_phe$Aerotolerance_cat <- ifelse(is.na(wild_phe$Aerotolerance_cat), wild_phe$extra, wild_phe$Aerotolerance_cat)
+f <- wild_phe[which(wild_phe$Phylum=="Firmicutes"),]
+b <- wild_phe[which(wild_phe$Phylum=="Bacteroidota"),]
+
+aero_col <- c("aerotolerant" = "deepskyblue3", "anaerobe" = "firebrick1", "unknown" = "dimgrey")
+
+b$genus_label <- "Other"
+b$genus_label[b$Genus=="Bacteroides"] <- "Bacteroides"
+b$genus_label[b$Genus=="Alistipes"] <- "Alistipes"
+b$genus_label[b$Genus=="Odoribacter"] <- "Odoribacter"
+b$genus_label[b$Genus=="Parabacteroides"] <- "Parabacteroides"
+b$genus_label[b$Genus=="Parabacteroides"] <- "Parabacteroides"
+b$genus_label[b$Family.x=="Muribaculaceae" & b$Genus=="Other"] <- "Muribaculaceae fam."
+b$Aerotolerance_cat[b$genus_label=="Muribaculaceae fam."] <- "anaerobe"
+b$Aerotolerance_cat[b$genus_label=="Other"] <- "unknown"
+
+f$genus_label <- "Other"
+f$genus_label[f$Genus=="Lachnospiraceae NK4A136 group"] <- "Lachnospiraceae NK4A136 group"
+f$genus_label[f$Genus=="Ligilactobacillus"] <- "Ligilactobacillus"
+f$genus_label[f$Genus=="Colidextribacter"] <- "Colidextribacter"
+f$genus_label[f$Genus=="Limosilactobacillus"] <- "Limosilactobacillus"
+f$genus_label[f$Genus=="Roseburia"] <- "Roseburia"
+f$genus_label[f$Genus=="Oscillibacter"] <- "Oscillibacter"
+f$Aerotolerance_cat[f$genus_label=="Other"] <- "unknown"
+
+p <- ggplot(f, aes(x = Body_mass_g, y = Abundance, label = genus_label, fill = genus_label, colour = Aerotolerance_cat)) +
+            stat_smooth(method = loess, size = 0, span = 0.6, aes(color = Aerotolerance_cat), se = FALSE) + 
+            geom_textsmooth(method = "loess", size = 6, hjust = 0.3, linewidth = 1.5, aes(color = Aerotolerance_cat, fontface = 2), se = FALSE) +
+            scale_fill_manual(values = aero_col) +
+            theme_minimal() +
+            ylab("Relative abundance") +
+            xlab("Body mass (grams)") +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+            labs(title = "")  +
+            theme(legend.position = "none", axis.title = element_text(size = 30), axis.text.x = element_text(size = 25), axis.text.y = element_text(size = 25))  +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) + scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) + coord_cartesian(ylim = c(0, 1))  +
+  expand_limits(x = c(10, 30))
+plot <- p + scale_colour_manual(values = aero_col)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("Firmi_wild.png", plot=p, width = 6, height = 24)
+
+p <- ggplot(b, aes(x = Body_mass_g, y = Abundance, label = genus_label, fill = genus_label, colour = Aerotolerance_cat)) +
+            stat_smooth(method = loess, size = 0, span = 0.6, aes(color = Aerotolerance_cat), se = FALSE) + 
+            geom_textsmooth(method = "loess", size = 6, hjust = 0.3, linewidth = 1.5, aes(color = Aerotolerance_cat, fontface = 2), se = FALSE) +
+            scale_fill_manual(values = aero_col) +
+            theme_minimal() +
+            ylab("Relative abundance") +
+            xlab("Body mass (grams)") +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+            labs(title = "")  +
+            theme(legend.position = "none", axis.title = element_text(size = 30), axis.text.x = element_text(size = 25), axis.text.y = element_text(size = 25))  +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) + scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) + coord_cartesian(ylim = c(0, 1))  +
+  expand_limits(x = c(10, 30))
+plot <- p + scale_colour_manual(values = aero_col)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("Bact_wild.png", plot=p, width = 6, height = 24)
+
+# Lab mice:
+
+# colour by aerotolerance
+lab <- subset_samples(pseq, Source=="Lab")
+sample_data(lab)$Body_mass_g <- as.numeric(as.character(sample_data(lab)$Body_mass_g))
+lab <- lab %>%
+  aggregate_taxa(level = "Genus") %>%  
+  microbiome::transform(transform = "compositional")
+#lab <- aggregate_rare(lab, level = "Genus", detection = 0.02, prevalence = .05)
+lab <- subset_taxa(lab, Phylum=="Firmicutes" | Phylum=="Bacteroidota" | Phylum=="Proteobacteria")
+lab_phyla <- psmelt(lab)
+pheno <-read.csv("Assembly_chapter_bacterial_phenotypes_FINISHED.csv")
+pheno <- pheno[,c("Family", "Genus", "Aerotolerance_cat")]
+pheno <- pheno[which(pheno$Genus!="Other"),]
+pheno$Aerotolerance_cat[pheno$Aerotolerance_cat=="nonaerotolerant"] <- "anaerobe"
+lab_phe <- merge(lab_phyla, pheno, by="Genus", all.x=TRUE, all.y=FALSE)
+
+# Now checking if I can determine aerotolerance from family-level taxa info for those that have unknown genus level taxa. 
+unknown_genus <- lab_phe[which(lab_phe$Genus=="Other"),]
+unknown_genus <- unknown_genus[,c("Family.x", "Genus")]
+unknown_genus <- unknown_genus[!duplicated(unknown_genus),] # 65
+unknown_genus <- unknown_genus[which(unknown_genus$Family.x!="Other"),] # 64
+`%notin%` <- Negate(`%in%`)
+unknown_genus <- unknown_genus[which(unknown_genus$Family.x%notin%wild_unknown$Family.x),] # 0
+
+# Add aerotolerance at family level for those that don't have it at genus level
+famaero <- read.csv("Unknown_genus_families_wild_aero.csv")
+lab_phe$Aerotolerance_cat <- ifelse(is.na(lab_phe$Aerotolerance_cat), "unknown", lab_phe$Aerotolerance_cat)
+unique(lab_phe$Aerotolerance_cat) # "anaerobe"     "aerotolerant" "unknown"    
+famaero <- famaero[,c("Family", "Aerotolerance_cat")]
+colnames(famaero) <- c("famfam", "aeroaero")
+lab_phe <- merge(lab_phe, famaero, by.x="Family.x", by.y="famfam", all.x=TRUE, all.y=FALSE)
+table(lab_phe$Aerotolerance_cat) #
+lab_phe$Aerotolerance_cat[lab_phe$Aerotolerance_cat=="unknown"] <- lab_phe$aeroaero
+table(lab_phe$Aerotolerance_cat) #  
+lab_phe$Aerotolerance_cat[lab_phe$Aerotolerance_cat=="mixed"] <- "unknown"
+lab_phe$Aerotolerance_cat[lab_phe$Aerotolerance_cat=="Unknown"] <- "unknown"
+lab_phe$Aerotolerance_cat[lab_phe$Aerotolerance_cat=="nonaerotolerant"] <- "anaerobe"
+table(lab_phe$Aerotolerance_cat) # 
+
+lab_phe$extra <- "unknown"
+lab_phe$Aerotolerance_cat <- ifelse(is.na(lab_phe$Aerotolerance_cat), lab_phe$extra, lab_phe$Aerotolerance_cat)
+f <- lab_phe[which(lab_phe$Phylum=="Firmicutes"),]
+b <- lab_phe[which(lab_phe$Phylum=="Bacteroidota"),]
+
+aero_col <- c("aerotolerant" = "deepskyblue3", "anaerobe" = "firebrick1", "unknown" = "dimgrey")
+
+b$genus_label <- "Other"
+b$genus_label[b$Genus=="Bacteroides"] <- "Bacteroides"
+#b$genus_label[b$Genus=="Muribaculum"] <- "Muribaculum"
+b$genus_label[b$Family.x=="Muribaculaceae" & b$Genus=="Other"] <- "Muribaculaceae fam."
+b$Aerotolerance_cat[b$genus_label=="Muribaculaceae fam."] <- "anaerobe"
+b$Aerotolerance_cat[b$genus_label=="Other"] <- "unknown"
+
+f$genus_label <- "Other"
+f$genus_label[f$Genus=="Lachnospiraceae NK4A136 group"] <- "Lachnospiraceae NK4A136 group"
+f$genus_label[f$Genus=="Ligilactobacillus"] <- "Ligilactobacillus"
+#f$genus_label[f$Genus=="Colidextribacter"] <- "Colidextribacter"
+#f$genus_label[f$Genus=="Limosilactobacillus"] <- "Limosilactobacillus"
+#f$genus_label[f$Genus=="Roseburia"] <- "Roseburia"
+#f$genus_label[f$Genus=="Oscillibacter"] <- "Oscillibacter"
+#f$genus_label[f$Genus=="Dubosiella"] <- "Dubosiella"
+f$genus_label[f$Genus=="Faecalibaculum"] <- "Faecalibaculum"
+#f$genus_label[f$Genus=="Lactobacillus"] <- "Lactobacillus"
+#f$genus_label[f$Family=="Oscillospiraceae" & f$Genus=="Other"] <- "Oscillospiraceae fam."
+#f$genus_label[f$Family=="Lachnospiraceae" & f$Genus=="Other"] <- "Lachnospiraceae fam."
+f$Aerotolerance_cat[f$genus_label=="Other"] <- "unknown"
+f$genus_label[f$genus_label=="Faecalibaculum"] <- "Faecalibaculum"
+
+p <- ggplot(f, aes(x = Body_mass_g, y = Abundance, label = genus_label, fill = genus_label, colour = Aerotolerance_cat)) +
+            stat_smooth(method = loess, size = 0, span = 0.6, aes(color = Aerotolerance_cat), se = FALSE) + 
+            geom_textsmooth(method = "loess", size = 6, hjust = 0.35, linewidth = 1.5, aes(color = Aerotolerance_cat, fontface = 2), se = FALSE) +
+            scale_fill_manual(values = aero_col) +
+            theme_minimal() +
+            ylab("Relative abundance") +
+            xlab("") +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+            labs(title = "")  +
+            theme(legend.position = "none", axis.title = element_text(size = 30), axis.text.x = element_text(size = 25), axis.text.y = element_text(size = 25))  +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) + scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) + ylim(0,1)  +
+  expand_limits(x = c(10, 30))
+plot <- p + scale_colour_manual(values = aero_col)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("Firmi_lab.png", plot=p, width = 6, height = 6)
+
+p <- ggplot(b, aes(x = Body_mass_g, y = Abundance, label = genus_label, fill = genus_label, colour = Aerotolerance_cat)) +
+            stat_smooth(method = loess, size = 0, span = 0.6, aes(color = Aerotolerance_cat), se = FALSE) + 
+            geom_textsmooth(method = "loess", size = 6, hjust = 0.3, linewidth = 1.5, aes(color = Aerotolerance_cat, fontface = 2), se = FALSE) +
+            scale_fill_manual(values = aero_col) +
+            theme_minimal() +
+            ylab("Relative abundance") +
+            xlab("") +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+            labs(title = "")  +
+            theme(legend.position = "none", axis.title = element_text(size = 30), axis.text.x = element_text(size = 25), axis.text.y = element_text(size = 25))  +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) + scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) + ylim(0,1)  +
+  expand_limits(x = c(10, 30))
+plot <- p + scale_colour_manual(values = aero_col)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("Bact_lab.png", plot=p, width = 6, height = 11)
+
+### RELATIVE ABUNDANCE OF PROTEOBACTERIAL GENERA
+
+library(RColorBrewer)
+nb.cols <- 29
+mycolors <- colorRampPalette(brewer.pal(8, "Dark2"))(nb.cols)
+set.seed(3856) #
+mixed <- sample(mycolors)
+
+wild_asv <- c("Enterobacteriaceae, unknown genus" = "#F6BD60", "Other ASVs" = "darkgrey")
+
+# Wild
+wild <- subset_samples(pseq, Source=="Wild")
+sample_data(wild)$Body_mass_g <- as.numeric(as.character(sample_data(wild)$Body_mass_g))
+wild <- tax_glom(wild, taxrank = "Genus")
+wild <- subset_taxa(wild, Phylum=="Proteobacteria")
+#wild_nonother <- subset_taxa(wild, Genus!="Other")
+#wild <- aggregate_rare(wild, level = "Genus", detection = 0.00001, prevalence = 0)
+wild_phyla <- psmelt(wild)
+check_asv <- wild_phyla[which(wild_phyla$Body_mass_g<10 & wild_phyla$Abundance>0.1),] 
+unique(check_asv$OTU) # only 1 asv, Family Enterobacteriaceae, genus Other
+wild_phyla$OTU[wild_phyla$OTU!="ACGGAGGGTGCAAGCGTTAATCGGAATTACTGGGCGTAAAGCGCACGCAGGCGGTCTGTCAAGTCGGATGTGAAATCCCCGGGCTCAACCTGGGAACTGCATTCGAAACTGGCAGGCTAGAGTCTTGTAGAGGGGGGTAGAATTCCAGGTGTAGCGGTGAAATGCGTAGAGATCTGGAGGAATACCGGTGGCGAAGGCGGCCCCCTGGACAAAGACTGACGCTCAGGTGCGAAAGCGTGGGGAGCAAACAGGATTAGATACCCTGGTAGTCCACGCCGTAAACGATGTCGACTTGGAGGTTGTGCCCTTGAGGCGTGGCTTCCGGAGCTAACGCGTTAAGTCGACCGCCTGGGGAGTACGGCCGCAAGGTTA"] <- "Other ASVs"
+wild_phyla$OTU[wild_phyla$OTU=="ACGGAGGGTGCAAGCGTTAATCGGAATTACTGGGCGTAAAGCGCACGCAGGCGGTCTGTCAAGTCGGATGTGAAATCCCCGGGCTCAACCTGGGAACTGCATTCGAAACTGGCAGGCTAGAGTCTTGTAGAGGGGGGTAGAATTCCAGGTGTAGCGGTGAAATGCGTAGAGATCTGGAGGAATACCGGTGGCGAAGGCGGCCCCCTGGACAAAGACTGACGCTCAGGTGCGAAAGCGTGGGGAGCAAACAGGATTAGATACCCTGGTAGTCCACGCCGTAAACGATGTCGACTTGGAGGTTGTGCCCTTGAGGCGTGGCTTCCGGAGCTAACGCGTTAAGTCGACCGCCTGGGGAGTACGGCCGCAAGGTTA"] <- "Enterobacteriaceae, unknown genus"
+
+p <- ggplot(wild_phyla, aes(x=Body_mass_g, y=Abundance, label=OTU, fill=OTU, colour=OTU, group = interaction(OTU, OTU))) +
+            stat_smooth(method=loess, size=0, span=.6,aes (color=OTU), se=FALSE) + 
+            geom_textsmooth(method="loess", size=7, hjust=.1, linewidth=2.5, aes(color=OTU), se=FALSE) +
+            scale_fill_manual(values = wild_asv) +
+            theme_minimal() +
+            ylab(c("Relative abundance")) +
+            xlab(c("Body mass (grams)")) +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+            labs(title = "") +
+            theme(legend.position = "none", axis.title = element_text(size = 40), axis.text.x = element_text(size = 30), axis.text.y = element_text(size=30)) +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) + scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) + coord_cartesian(ylim = c(0, 1))  +
+  expand_limits(x = c(10, 30))
+plot <- p + scale_colour_manual(values = wild_asv)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("Entero_wild.png", plot=p, width = 6, height = 24)
+
+# Lab
+lab <- subset_samples(pseq, Source=="Lab")
+sample_data(lab)$Body_mass_g <- as.numeric(as.character(sample_data(lab)$Body_mass_g))
+lab <- tax_glom(lab, taxrank = "Genus")
+lab <- subset_taxa(lab, Phylum=="Proteobacteria")
+#lab_nonother <- subset_taxa(lab, Genus!="Other")
+#lab <- aggregate_rare(lab, level = "Genus", detection = 0.02, prevalence = .02)
+lab_phyla <- psmelt(lab)
+check_asv <- lab_phyla[which(lab_phyla$chrono_age<20 & lab_phyla$Abundance>0.1),] # 
+
+lab_asv <- c("Muribacter" = "#F6BD60", "Escherichia-Shigella" = "#F6BD60", "Esch/Shig" = "#F6BD60","Other ASVs" = "darkgrey")
+lab_phyla$OTU[lab_phyla$OTU=="ACGGAGGGTGCAAGCGTTAATCGGAATTACTGGGCGTAAAGCGCACGCAGGCGGTTTGTTAAGTCAGATGTGAAATCCCCGGGCTCAACCTGGGAACTGCATCTGATACTGGCAAGCTTGAGTCTCGTAGAGGGGGGTAGAATTCCAGGTGTAGCGGTGAAATGCGTAGAGATCTGGAGGAATACCGGTGGCGAAGGCGGCCCCCTGGACGAAGACTGACGCTCAGGTGCGAAAGCGTGGGGAGCAAACAGGATTAGATACCCTGGTAGTCCACGCCGTAAACGATGTCGACTTGGAGGTTGTGCCCTTGAGGCGTGGCTTCCGGAGCTAACGCGTTAAGTCGACCGCCTGGGGAGTACGGCCGCAAGGTTA"] <- "Escherichia-Shigella"
+lab_phyla$OTU[lab_phyla$OTU=="ACGGAGGGTGCAAGCGTTAATCGGAATAACTGGGCGTAAAGGGCACGCAGGCGGTTGTTTAAGTGAGGTGTGAAAGCCCCGGGCTCAACCTGGGAATTGCATTTCAGACTGGACAACTAGAGTACTTTAGGGAGGGGTAGAATTCCACGTGTAGCGGTGAAATGCGTAGAGATGTGGAGGAATACCGAAGGCGAAGGCAGCCCCTTGGGAATGTACTGACGCTCATGTGCGAAAGCGTGGGGAGCAAACAGGATTAGATACCCTGGTAGTCCACGCCGTAAACGCTGTCGATTTGGGGATTGGGCTTTGAGCTTGGTGCCCGTAGCTAACGTGATAAATCGACCGCCTGGGGAGTACGGCCGCAAGGTTA"] <- "Muribacter"
+lab_phyla$OTU[lab_phyla$OTU!="Escherichia-Shigella" & lab_phyla$OTU!="Muribacter"] <- "Other ASVs"
+lab_phyla$OTU[lab_phyla$OTU=="Escherichia-Shigella"] <- "Esch/Shig"
+
+p <- ggplot(lab_phyla, aes(x=Body_mass_g, y=Abundance, label=OTU, fill=OTU, colour=OTU, group = interaction(OTU, OTU))) +
+            stat_smooth(method=loess, size=0, span=.6, aes(color=OTU), se=FALSE) + 
+            geom_textsmooth(method="loess", size=7, hjust=.09, linewidth=2.5, aes(color=OTU), se=FALSE) +
+            scale_fill_manual(values = lab_asv) +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  ) +
+            ylab("Relative abundance") +
+            xlab("Estimated body mass (g)") +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+            labs(title = "") +
+            theme(legend.position = "none", axis.title = element_text(size = 40), axis.text.x = element_text(size = 30), axis.text.y = element_text(size=30)) +
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) + scale_y_continuous(breaks = c(0,0.1,0.2)) + ylim(0, 1) 
+plot <- p + scale_colour_manual(values = lab_asv)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("Entero_lab.png", plot=p, width = 7.2, height = 24)
+
+```
+
+Do shared taxa (taxa found at least once in both lab and wild mice) explain conserved age patterns? Testing by checking if unique taxa (unique to lab/wild) still show age related patterns
+
+```{r}
+
+age <- readRDS("phy.rds") 
+asv <- read.csv("Age_shared_taxa_labANDwild.csv") 
+
+taxa_to_ignore <- asv$V1
+`%notin%` <- Negate(`%in%`)
+filtered <- prune_taxa(taxa_names(age) %notin% taxa_to_ignore, age) # 7993 taxa and 472 samples
+age <- filtered
+
+lab <- subset_samples(age, Source=="Lab")
+lab <- prune_taxa(taxa_sums(lab) > 0, lab) #  677 taxa and 39 samples
+wild <- subset_samples(age, Source=="Wild")
+wild <- prune_taxa(taxa_sums(wild) > 0, wild) # 6835 taxa and 433 samples
+
+###### PHYLUM
+
+library(RColorBrewer)
+nb.cols <- 25
+mycolors <- colorRampPalette(brewer.pal(8, "Dark2"))(nb.cols)
+set.seed(3856) #
+mixed <- sample(mycolors)
+colors <- c("#2A4849", "#88A09E", "#704C5E", "#CB8364")
+newcolors <- c( "#84A59D", "#F28482", "#e0a604")
+lab_colors <- c("#84A59D","#F28482", "#e0a604")
+library(geomtextpath)
+
+# Wild mice:
+sample_data(wild)$Body_mass_g <- as.numeric(as.character(sample_data(wild)$Body_mass_g))
+wild <- wild %>%
+  aggregate_taxa(level = "Phylum") 
+wild <- aggregate_rare(wild , level = "Phylum", detection = 0.02, prevalence = .02)
+wild_phyla <- psmelt(wild)
+wild_phyla <- wild_phyla[which(wild_phyla$OTU=="Firmicutes" | wild_phyla$OTU=="Bacteroidota" | wild_phyla$OTU=="Proteobacteria"),]
+unique(wild_phyla$OTU) #  "Firmicutes"     "Proteobacteria" "Bacteroidota" 
+
+p <- ggplot(wild_phyla, aes(x = Body_mass_g, y = Abundance, label = OTU, fill = OTU, colour = OTU, group = interaction(OTU, OTU))) +
+  stat_smooth(method = loess, size = 0, span = .6, aes(color = OTU), se = TRUE) + 
+  geom_textsmooth(method = "loess", size = 8, hjust = 0.4, linewidth = 1.5, aes(color = OTU, fontface = 2), se = TRUE) +
+  scale_fill_manual(values = newcolors) +
+  theme_minimal() +
+  ylab("Relative abundance") +
+  xlab("Body mass (g)") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title = "") +
+  theme(legend.position = "none", axis.title = element_text(size = 30), axis.text.x = element_text(size = 25), axis.text.y = element_text(size = 25), 
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  )  +
+  coord_cartesian(ylim = c(0, 1)) +
+  scale_x_continuous(breaks = c(10, 20, 30)) +
+  expand_limits(x = c(10, 30))
+plot <- p + scale_colour_manual(values = newcolors)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("phyla_wild_UNIQUE.png", plot=p, width = 7, height = 7)
+
+# Lab mice:
+sample_data(lab)$Body_mass_g <- as.numeric(as.character(sample_data(lab)$Body_mass_g))
+lab_P <- lab %>%
+  aggregate_taxa(level = "Phylum") 
+lab_P <- aggregate_rare(lab_P, level = "Phylum", detection = 0.02, prevalence = .02)
+lab_phyla <- psmelt(lab_P)
+unique(lab_phyla$OTU)
+lab_phyla <- lab_phyla[which(lab_phyla$OTU!="Other"),]
+lab_phyla <- lab_phyla[which(lab_phyla$OTU!="Deferribacterota"),]
+lab_phyla <- lab_phyla[which(lab_phyla$OTU!="Verrucomicrobiota"),]
+lab_phyla <- lab_phyla[which(lab_phyla$OTU!="Desulfobacterota"),]
+lab_phyla <- lab_phyla[which(lab_phyla$OTU!="Actinobacteriota"),]
+
+p <- ggplot(lab_phyla, aes(x = Body_mass_g, y = Abundance, label = OTU, fill = OTU, colour = OTU, group = interaction(OTU, OTU))) +
+  stat_smooth(method = loess, size = 0, span = .6, aes(color = OTU), se = TRUE) + 
+  geom_textsmooth(method = "loess", size = 8, hjust = 0.95, linewidth = 1.5, aes(color = OTU, fontface = 2), se = TRUE) +
+  scale_fill_manual(values = newcolors) +
+  theme_minimal() +
+  ylab("Relative abundance") +
+  xlab("Body mass (g)") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title = "") +
+  theme(legend.position = "none", axis.title = element_text(size = 30), axis.text.x = element_text(size = 25), axis.text.y = element_text(size = 25), 
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  )  + coord_cartesian(ylim = c(0, 1))
+plot <- p + scale_colour_manual(values = lab_colors)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("phyla_lab_UNIQUE.png", plot=p, width = 7, height = 7)
+
+# ASV richness in predominant phyla
+wild <- subset_samples(age, Source=="Wild")
+wild <- prune_taxa(taxa_sums(wild) > 0, wild)
+sample_data(wild)$Body_mass_g <- as.numeric(as.character(sample_data(wild)$Body_mass_g))
+taxa <- wild %>% psmelt()
+taxa <- taxa[which(taxa$Phylum=="Firmicutes" | taxa$Phylum=="Bacteroidota" | taxa$Phylum=="Proteobacteria"),] 
+library(plyr)
+taxa <- taxa[which(taxa$Abundance>0),]
+counts <- ddply(taxa, .(taxa$trapdate, taxa$Phylum), nrow)
+names(counts) <- c("trapdate", "Phylum", "Freq")
+#counts <- counts %>% pivot_wider(names_from = Phylum, values_from = Freq)
+meta <- data.frame(sample_data(wild))
+meta_wild <- merge(meta, counts, by="trapdate")
+newcolors <- c( "#84A59D", "#F28482", "#e0a604")
+
+p <- ggplot(meta_wild, aes(x=Body_mass_g, y=Freq, label=Phylum, fill=Phylum, colour=Phylum, group = interaction(Phylum, Phylum))) +
+            stat_smooth(method=loess, size=0, span=.6,aes (color=Phylum), se=TRUE) + 
+            geom_textsmooth(method="loess", size=8, hjust=0.3, linewidth=1.5, aes(color=Phylum, fontface=2), se=FALSE) +
+            scale_fill_manual(values = newcolors) +
+            theme_minimal() +
+            ylab(c("ASV richness")) +
+            xlab(c("Body mass (g)")) +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+            labs(title = "") +
+            theme(legend.position = "none", axis.title = element_text(size = 30), axis.text.x = element_text(size = 25), axis.text.y = element_text(size = 25), 
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  )  +scale_x_continuous(breaks = scales::pretty_breaks(n = 6)) +
+  scale_x_continuous(breaks = c(10, 20, 30)) +
+  expand_limits(x = c(10, 30))
+plot <- p + scale_colour_manual(values = newcolors)
+p1 <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("ASV_wild_UNIQUE.png", plot=p1, width = 7, height = 7)
+
+# lab 
+lab <- subset_samples(pseq, Source=="Lab")
+sample_data(lab)$Body_mass_g <- as.numeric(as.character(sample_data(lab)$Body_mass_g))
+lab <- prune_taxa(taxa_sums(lab) > 0, lab)
+taxa <- lab %>% psmelt()
+taxa <- taxa[which(taxa$Phylum=="Firmicutes" | taxa$Phylum=="Bacteroidota" | taxa$Phylum=="Proteobacteria"),] 
+library(plyr)
+taxa <- taxa[which(taxa$Abundance>0),]
+counts <- ddply(taxa, .(taxa$EB_code, taxa$Phylum), nrow)
+names(counts) <- c("EB_code", "Phylum", "Freq")
+#counts <- counts %>% pivot_wider(names_from = Phylum, values_from = Freq)
+meta <- data.frame(sample_data(lab))
+meta_x <- merge(meta, counts, by="EB_code")
+lab_colors <- c( "#84A59D", "#F28482", "#e0a604")
+
+p <- ggplot(meta_x, aes(x=Body_mass_g, y=Freq, label=Phylum, fill=Phylum, colour=Phylum, group = interaction(Phylum, Phylum))) +
+       coord_cartesian(ylim = c(0, 200)) +
+            stat_smooth(method=loess, size=0, span=.6,aes (color=Phylum), se=TRUE) + 
+            geom_textsmooth(method="loess", size=8, hjust=0.7, linewidth=1.5, aes(color=Phylum, fontface=2), se=FALSE) +
+            scale_fill_manual(values = lab_colors) +
+            theme_minimal() +
+            ylab(c("ASV richness")) +
+            xlab(c("Estimated body mass (g)")) +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.position = "none", axis.title = element_text(size = 30), axis.text.x = element_text(size = 25), axis.text.y = element_text(size = 25), 
+  axis.line = element_line(size = 0.5),
+  axis.ticks = element_line(size = 0.5)
+  )  +
+            labs(title = "") + coord_cartesian(ylim = c(0, 200)) +
+            scale_x_continuous(breaks = scales::pretty_breaks(n = 6))  +
+  scale_x_continuous(breaks = c(10, 20, 30)) +
+  expand_limits(x = c(10, 30))
+plot <- p + scale_colour_manual(values = lab_colors)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("ASV_lab_UNIQUE.png", plot=p, width = 7, height = 7)
+
+```
+
+Do lab and wild mice have similar anaerobe:aerobe dynamics?
+
+```{r}
+
+pheno <- read.csv("Assembly_chapter_bacterial_phenotypes_FINISHED.csv") # this file has phenotypic data of taxa included in this age dataset
+age <- readRDS("phy.rds")
+
+pseq <- age
+df <- as.data.frame(lapply(sample_data(pseq),function (y) if(class(y)!="factor" ) as.factor(y) else y),stringsAsFactors=T)
+row.names(df) <- sample_names(pseq)
+sample_data(pseq) <- sample_data(df)
+pseq_loc <- merge_samples(pseq, "Source") 
+comp <- microbiome::transform(pseq, "compositional")
+genus <- comp %>% tax_glom(taxrank = "Genus") %>% psmelt()
+#genus_min <- genus[c("Source", "Body_mass_g", "chrono_age", "Abundance", "Family", "Genus")]
+#genus_min$Abundance <- round(genus_min$Abundance, digits=4)
+genus$fam_gen <- paste(genus$Family, genus$Genus, sep="-") 
+unique(genus$fam_gen) # 616
+
+pheno$fam_gen <- paste(pheno$Family, pheno$Genus, sep="-") # 651 (includes spike in taxa, n=2)
+age_pheno <- merge(genus, pheno, by="fam_gen", all.x=TRUE, all.y=FALSE)
+
+# Add aerotolerance at family level for those that don't have it at genus level
+famaero <- read.csv("old/Unknown_genus_families_wild_aero.csv")
+age_pheno$Aerotolerance_cat <- ifelse(is.na(age_pheno$Aerotolerance_cat), "unknown", age_pheno$Aerotolerance_cat)
+unique(age_pheno$Aerotolerance_cat) # "anaerobe"     "aerotolerant" "unknown"    
+famaero <- famaero[,c("Family", "Aerotolerance_cat")]
+colnames(famaero) <- c("famfam", "aeroaero")
+age_pheno$Aerotolerance_cat[age_pheno$Aerotolerance_cat=="Unknown"] <- "unknown"
+age_pheno <- merge(age_pheno, famaero, by.x="Family.x", by.y="famfam", all.x=TRUE, all.y=FALSE)
+table(age_pheno$Aerotolerance_cat) #
+age_pheno$Aerotolerance_cat[age_pheno$Aerotolerance_cat=="unknown"] <- NA
+age_pheno$Aerotolerance_cat <- ifelse(is.na(age_pheno$Aerotolerance_cat), age_pheno$aeroaero, age_pheno$Aerotolerance_cat)
+table(age_pheno$Aerotolerance_cat) #  
+age_pheno$Aerotolerance_cat[age_pheno$Aerotolerance_cat=="mixed"] <- "unknown"
+age_pheno$Aerotolerance_cat[age_pheno$Aerotolerance_cat=="Unknown"] <- "unknown"
+age_pheno$Aerotolerance_cat[age_pheno$Aerotolerance_cat=="nonaerotolerant"] <- "anaerobe"
+age_pheno$Aerotolerance_cat[age_pheno$Aerotolerance_cat=="nonaeotolerant"] <- "anaerobe"
+table(age_pheno$Aerotolerance_cat) #
+
+age_pheno[is.na(age_pheno)] <- "unknown"
+min <- age_pheno[,c("Source", "chrono_age", "Body_mass_g", "trapdate", "Abundance", "Aerotolerance", "Aerotolerance_cat", "Spore_formation", "Gram_stain")]
+min$id_aero <- paste(min$trapdate, min$Aerotolerance_cat, sep="-")
+min_x <- aggregate(x = min$Abundance,                # Specify data column
+          by = list(min$id_aero),              # Specify group indicator
+          FUN = sum)        # 1794 obs  
+min_y <- merge(min_x, min, by.x="Group.1", by.y="id_aero", all.x=TRUE, all.y=FALSE)
+min_y <- min_y[,c("x", "Source", "chrono_age", "Body_mass_g", "trapdate",  "Aerotolerance_cat", "Spore_formation", "Gram_stain", "Group.1")]
+min_y <- min_y %>% 
+  distinct(.keep_all = TRUE)
+min_y$Spore_formation[min_y$Spore_formation==""] <- "unknown"
+min_y$Spore_formation[min_y$Spore_formation==" "] <- "unknown"
+min_y$Spore_formation[min_y$Spore_formation=="Unknown"] <- "unknown"
+min_y$Spore_formation[min_y$Spore_formation=="?"] <- "unknown"
+
+unique(min_y$Aerotolerance_cat) #  "aerotolerant" "anaerobe"     "unknown"  
+
+# Relative abundance of aerotolerant taxa in mice >20g body mass in lab vs wild:
+lab <- min_y[which(min_y$Source=="Lab"),]
+lab$Body_mass_g <- as.numeric(as.factor(lab$Body_mass_g))
+lab <- lab[which(lab$Body_mass_g>20),]
+lab <- lab[which(lab$Aerotolerance_cat=="aerotolerant"),]
+lab <- lab[,c("x", "trapdate")]
+lab <- lab[!duplicated(lab),] # 23
+mean(lab$x) # 0.2307855
+
+wild <- min_y[which(min_y$Source=="Wild"),]
+wild$Body_mass_g <- as.numeric(as.factor(wild$Body_mass_g))
+wild <- wild[which(wild$Body_mass_g>20),]
+wild <- wild[which(wild$Aerotolerance_cat=="aerotolerant"),]
+wild <- wild[,c("x", "trapdate")]
+wild <- wild[!duplicated(wild),] # 417
+mean(wild$x) # 0.3411269
+
+# Relative abundance of aerotolerant families in wild mice
+check <- age_pheno[which(age_pheno$Source=="Wild" & age_pheno$Aerotolerance_cat=="aerotolerant"),]
+check <- check[,c("Family.x", "Sample", "Abundance")]
+check$comb <- paste(check$Family.x, check$Sample, sep="_")
+check <- check[,c("comb", "Abundance")]
+library(dplyr)
+new <- check %>%
+  group_by(comb) %>%
+  summarise(combAbun = sum(Abundance, na.rm = TRUE)) # if doesn't work right, try unload plyr package
+new$family <- sub("\\_.*", "", new$comb)
+new$sample <- sub(".*_", "", new$comb)
+newest <- new[,c("combAbun", "family")]
+newest <- newest %>%
+  group_by(family) %>%
+  summarise(abundance = mean(combAbun, na.rm = TRUE))
+newest <- newest[order(newest$abundance, decreasing=T),]
+head(newest)
+
+# Checking same for lab mice
+check <- age_pheno[which(age_pheno$Source=="Lab" & age_pheno$Aerotolerance_cat=="aerotolerant"),]
+check <- check[,c("Family.x", "Sample", "Abundance")]
+check$comb <- paste(check$Family.x, check$Sample, sep="_")
+check <- check[,c("comb", "Abundance")]
+library(dplyr)
+new <- check %>%
+  group_by(comb) %>%
+  summarise(combAbun = sum(Abundance, na.rm = TRUE))
+new$family <- sub("\\_.*", "", new$comb)
+new$sample <- sub(".*_", "", new$comb)
+newest <- new[,c("combAbun", "family")]
+newest <- newest %>%
+  group_by(family) %>%
+  summarise(abundance = mean(combAbun, na.rm = TRUE))
+newest <- newest[order(newest$abundance, decreasing=T),]
+head(newest)
+
+# PLOTTING
+lab_colors <- c( "deepskyblue3", "firebrick1", "dimgrey")
+spore <- c("brown", "orange", "dimgrey")
+lab <- min_y[which(min_y$Source=="Lab"),]
+counts <- lab[,c("trapdate", "Aerotolerance_cat", "x")]
+counts <- counts[which(counts$Aerotolerance_cat=="unknown"),]
+counts <- counts[!duplicated(counts),]
+summary(counts$x) # 0.0000878-0.1172346, mean 0.0138808, median 0.0077476
+counts <- lab[,c("trapdate", "Spore_formation", "x")]
+counts <- counts[which(counts$Spore_formation=="unknown"),]
+counts <- counts[!duplicated(counts),]
+summary(counts$x) # 0.00000-0.99815, mean 0.33333, median 0.34490
+lab$chrono_age <- as.numeric(as.character(lab$chrono_age))
+lab$Spore_formation[lab$Spore_formation=="NSF?" | lab$Spore_formation=="SF?" | lab$Spore_formation=="mixed" | lab$Spore_formation=="unknown"] <- "Unknown"
+lab$Spore_formation[lab$Spore_formation=="SF"] <- "Spore-forming"
+lab$Spore_formation[lab$Spore_formation=="NSF"] <- "Non-spore-forming"
+lab$Aerotolerance_cat[lab$Aerotolerance_cat=="nonaerotolerant"] <- "Anaerobic"
+lab$Aerotolerance_cat[lab$Aerotolerance_cat=="nonaeotolerant"] <- "Anaerobic"
+lab$Aerotolerance_cat[lab$Aerotolerance_cat=="unknown"] <- "Unknown"
+lab$Aerotolerance_cat[lab$Aerotolerance_cat=="mixed"] <- "Unknown"
+lab$Aerotolerance_cat[lab$Aerotolerance_cat=="aerotolerant"] <- "Aerotolerant"
+lab$Aerotolerance_cat[lab$Aerotolerance_cat=="anaerobe"] <- "Anaerobic"
+lab_matu <- lab[which(lab$chrono_age>21),]
+lab$Body_mass_g <- as.numeric(as.character(lab$Body_mass_g))
+
+p <- ggplot(lab, aes(x=Body_mass_g, y=x, label=Aerotolerance_cat, fill=Aerotolerance_cat, colour=Aerotolerance_cat, group = interaction(Aerotolerance_cat, Aerotolerance_cat))) +
+            stat_smooth(method=loess, size=0, span=.6,aes (color=Aerotolerance_cat), se=TRUE) + 
+            geom_textsmooth(method="loess", size=8, hjust=0.85, linewidth=1.5, aes(color=Aerotolerance_cat, fontface=2), se=FALSE) +
+            scale_fill_manual(values = lab_colors) +
+            theme_minimal() +
+            ylab(c("Relative abundance")) +
+            xlab(c("Age (days)")) +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),axis.line = element_line(size = 0.5),
+axis.ticks = element_line(size = 0.5)
+) +
+            labs(title = "") +
+            theme(legend.position = "none", axis.title = element_text(size = 40), axis.text.x = element_text(size = 25), axis.text.y = element_text(size=25)) + coord_cartesian(ylim = c(0, 250)) +
+       coord_cartesian(ylim = c(0, 1))  + scale_x_continuous(breaks=c(5,10,15, 20, 25,30))
+plot <- p + scale_colour_manual(values = lab_colors)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("Aero_lab.png", plot=p, width = 7, height = 7)
+
+# only weaned lab mice (all pre-weaned are <8g)
+weaned <- lab[which(lab$Body_mass_g>8),]
+p <- ggplot(weaned, aes(x=Body_mass_g, y=x, label=Aerotolerance_cat, fill=Aerotolerance_cat, colour=Aerotolerance_cat, group = interaction(Aerotolerance_cat, Aerotolerance_cat))) +
+            stat_smooth(method=loess, size=0, span=.6,aes (color=Aerotolerance_cat), se=TRUE) + 
+            geom_textsmooth(method="loess", size=8, hjust=0.85, linewidth=1.5, aes(color=Aerotolerance_cat, fontface=2), se=FALSE) +
+            scale_fill_manual(values = lab_colors) +
+            theme_minimal() +
+            ylab(c("Relative abundance")) +
+            xlab(c("Age (days)")) +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),axis.line = element_line(size = 0.5),
+axis.ticks = element_line(size = 0.5)
+) +
+            labs(title = "") +
+            theme(legend.position = "none", axis.title = element_text(size = 40), axis.text.x = element_text(size = 25), axis.text.y = element_text(size=25)) +
+       coord_cartesian(ylim = c(0, 1)) + scale_x_continuous(breaks=c(8,10,15, 20, 25,30))
+plot <- p + scale_colour_manual(values = lab_colors)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("Aero_lab_WEANED.png", plot=p, width = 7, height = 7)
+
+# WILD
+wild <- min_y[which(min_y$Source=="Wild"),]
+counts <- wild[,c("trapdate", "Aerotolerance_cat", "x")]
+counts <- counts[which(counts$Aerotolerance_cat=="unknown"),]
+counts <- counts[!duplicated(counts),]
+summary(counts$x) # 0.00000-0.18528, mean 0.03757, median 0.03140
+counts <- wild[,c("trapdate", "Spore_formation", "x")]
+counts <- counts[which(counts$Spore_formation=="unknown"),]
+counts <- counts[!duplicated(counts),]
+summary(counts$x) # 0.00000-0.92774, mean 0.33333, median 0.30450
+wild$Body_mass_g <- as.numeric(as.character(wild$Body_mass_g))
+wild$Spore_formation[wild$Spore_formation=="NSF?" | wild$Spore_formation=="SF?" | wild$Spore_formation=="mixed" | wild$Spore_formation=="unknown"] <- "Unknown"
+wild$Spore_formation[wild$Spore_formation=="SF"] <- "Spore-forming"
+wild$Spore_formation[wild$Spore_formation=="NSF"] <- "Non-spore-forming"
+wild$Aerotolerance_cat[wild$Aerotolerance_cat=="nonaerotolerant"] <- "Anaerobic"
+wild$Aerotolerance_cat[wild$Aerotolerance_cat=="nonaeotolerant"] <- "Anaerobic"
+wild$Aerotolerance_cat[wild$Aerotolerance_cat=="unknown"] <- "Unknown"
+wild$Aerotolerance_cat[wild$Aerotolerance_cat=="mixed"] <- "Unknown"
+wild$Aerotolerance_cat[wild$Aerotolerance_cat=="aerotolerant"] <- "Aerotolerant"
+wild$Aerotolerance_cat[wild$Aerotolerance_cat=="anaerobe"] <- "Anaerobic"
+
+spore_reorder <- c("dimgrey", "brown", "orange")
+
+p <- ggplot(wild, aes(x=Body_mass_g, y=x, label=Aerotolerance_cat, fill=Aerotolerance_cat, colour=Aerotolerance_cat, group = interaction(Aerotolerance_cat, Aerotolerance_cat))) +
+            stat_smooth(method=loess, size=0, span=.6,aes (color=Aerotolerance_cat), se=TRUE) + 
+            geom_textsmooth(method="loess", size=8, hjust=0.85, linewidth=1.5, aes(color=Aerotolerance_cat, fontface=2), se=FALSE) +
+            scale_fill_manual(values = lab_colors) +
+            theme_minimal() +
+            ylab(c("Relative abundance")) +
+            xlab(c("Body mass (g)")) +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),axis.line = element_line(size = 0.5),
+axis.ticks = element_line(size = 0.5)
+) +
+            labs(title = "") +
+            theme(legend.position = "none", axis.title = element_text(size = 40), axis.text.x = element_text(size = 25), axis.text.y = element_text(size=25)) +
+       coord_cartesian(ylim = c(0, 1))  + scale_x_continuous(breaks=c(5,10,15, 20, 25, 30)) +
+  expand_limits(x = c(10, 30))
+plot <- p + scale_colour_manual(values = lab_colors)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+ggsave("Aero_wild.png", plot=p, width = 7, height = 7)
+
+```
+
+Genus-level composition across samples in lab vs wild:
+
+```{r}
+
+age <- readRDS("phy.rds") 
+sample_data(age)$Body_mass_g <- round(sample_data(age)$Body_mass_g, digits = 0)
+
+# Taxa barplots
+library(microbiome)
+library(dplyr)
+library(hrbrthemes)
+library(gcookbook)
+library(tidyverse)
+
+library(RColorBrewer)
+nb.cols <- 28
+mycolors <- colorRampPalette(brewer.pal(8, "Set3"))(nb.cols)
+set.seed(1) #
+mixed <- sample(mycolors)
+
+fams <- c("Other" = "#82A0BC", "Bacteroides" = "#E1563E",  "Ligilactobacillus" = "#75D5C7", "Alistipes" = "#8DB1AB", "Colidextribacter" = "#C6D153", "Odoribacter" = "#C76D7E", "Limosilactobacillus" = "lightpink", "Parabacteroides" = "#E34475", "Oscillibacter" = "#635DE2", "Lactobacillus" = "#503047",  "Rikenella" = "#92A84B", "Mucispirillum" = "#63AFA8", "Alloprevotella" = "#E1F6B0",  "Escherichia-Shigella" = "#D15BA2",   "Akkermansia" = "#937757",  "Faecalibaculum" = "#F6BD60")
+
+#"Butyricimonas" = "#966E96", "GCA-900066575" = "#62C0E2", "Erysipelatoclostridium" = "#A0B490","Dubosiella" = "#D47178", "Acetatifactor" = "#635DE2", "Lachnoclostridium" = "#DDA7B1", "Blautia" = "#65EBA8", "Ileibacterium" = "#E34475", "Rikenellaceae RC9 gut group" = "#66E175","Roseburia" = "#75D5C7", "Lachnospiraceae UCG-001" = "#7C33E7", "Lachnospiraceae NK4A136 group" = "#DAD8C6",
+
+wild <- subset_samples(age, Source=="Wild" & Body_mass_g>0)
+lab <- subset_samples(age, Source=="Lab" & Body_mass_g>0)
+
+wild <- merge_samples(wild, "Body_mass_g") # 24 samples
+lab <- merge_samples(lab, "Body_mass_g") # 13 samples
+sample_data(lab)$Body_mass_g <- as.numeric(as.character(sample_data(lab)$Body_mass_g))
+
+### Lab
+pseq <- lab %>%
+  aggregate_taxa(level = "Genus") %>%  
+  microbiome::transform(transform = "compositional")
+pseq <- aggregate_rare(pseq, level = "Genus", detection = 3/100, prevalence = 5/100)
+rownames(sample_data(pseq)) <- sample_data(pseq)$Body_mass_g
+
+otu_df <- as.data.frame(otu_table(pseq))
+otu_df$Taxon <- rownames(otu_df)
+df_long <- pivot_longer(otu_df, cols = -Taxon, names_to = "Body_mass_g", values_to = "Abundance")
+
+custom_order <- unique(df_long$Taxon)
+
+# Create the stacked bar plot using ggplot
+pL <- ggplot(data = df_long, aes(x = Body_mass_g, y = Abundance, fill = Taxon)) +
+  geom_bar(stat = "identity", width = .8) +
+  scale_fill_manual(values = fams, name = "Bacterial genus", breaks = custom_order) +
+  theme_minimal() +
+  guides(fill = guide_legend(ncol = 1)) +
+  labs(x = "", y = "Relative abundance", title = "", fill = "Genus") +
+  theme(
+    axis.text.x = element_text(size = 20, angle = 0, hjust = 0),
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 20),
+    axis.text.y = element_text(size = 25),
+    axis.title.y = element_text(size = 30),
+    text = element_text(size = 20))
+
+### Wild
+pseq <- wild %>%
+  aggregate_taxa(level = "Genus") %>%  
+  microbiome::transform(transform = "compositional")
+pseq <- aggregate_rare(pseq, level = "Genus", detection = 3/100, prevalence = 5/100)
+rownames(sample_data(pseq)) <- sample_data(pseq)$Body_mass_g
+
+otu_df <- as.data.frame(otu_table(pseq))
+otu_df$Taxon <- rownames(otu_df)
+df_long <- pivot_longer(otu_df, cols = -Taxon, names_to = "Body_mass_g", values_to = "Abundance")
+
+custom_order <- unique(df_long$Taxon)
+
+# Create the stacked bar plot using ggplot
+pW <- ggplot(data = df_long, aes(x = Body_mass_g, y = Abundance, fill = Taxon)) +
+  geom_bar(stat = "identity", width = .8) +  
+  scale_fill_manual(values = fams, name = "Bacterial genus", breaks = custom_order) +
+  theme_minimal() +
+  guides(fill = guide_legend(ncol = 1)) +
+  labs(x = "", y = "", title = "", fill = "Genus") +
+  theme(
+    axis.text.x = element_text(size = 19, angle = 45, hjust = 1),
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 20),
+    axis.text.y = element_text(size = 25),
+    axis.title.y = element_text(size = 30),
+    text = element_text(size = 20)
+  ) 
+
+# Checking relative abundance of Ligilactobacillus in lab pups
+age <- readRDS("phy.rds") 
+lab1 <- subset_samples(age, Source=="Lab" & chrono_age<14)
+lab2 <- subset_samples(age, Source=="Lab" & chrono_age>18 & chrono_age<22) # 2 samples
+lab3 <- subset_samples(age, Source=="Lab" & chrono_age>30)
+lab4 <- subset_samples(age, Source=="Lab" & chrono_age>21)
+
+lab1 <- lab1 %>%
+  aggregate_taxa(level = "Genus") %>%  
+  microbiome::transform(transform = "compositional")
+taxa <- data.frame(otu_table(lab1))
+taxa$genus <- rownames(taxa)
+lig <- taxa[which(taxa$genus=="Ligilactobacillus"),]
+lig <- lig[,c(1:5)]
+lig #  
+rowMeans(lig) 
+
+lab2 <- lab2 %>%
+  aggregate_taxa(level = "Genus") %>%  
+  microbiome::transform(transform = "compositional")
+taxa <- data.frame(otu_table(lab2))
+taxa$genus <- rownames(taxa)
+lig <- taxa[which(taxa$genus=="Ligilactobacillus"),]
+lig <- lig[,c(1:2)]
+lig 
+rowMeans(lig) 
+
+lab3 <- lab3 %>%
+  aggregate_taxa(level = "Genus") %>%  
+  microbiome::transform(transform = "compositional")
+taxa <- data.frame(otu_table(lab3))
+taxa$genus <- rownames(taxa)
+lig <- taxa[which(taxa$genus=="Ligilactobacillus"),]
+lig <- lig[,c(1:15)]	
+rowMeans(lig) 
+lig_list <- as.list(lig)
+range(lig_list) 
+
+lab4 <- lab4 %>%
+  aggregate_taxa(level = "Genus") %>%  
+  microbiome::transform(transform = "compositional")
+taxa <- data.frame(otu_table(lab4))
+taxa$genus <- rownames(taxa)
+lig <- taxa[which(taxa$genus=="Ligilactobacillus"),]
+lig <- lig[,c(1:27)]	
+rowMeans(lig) 
+lig_list <- as.list(lig)
+range(lig_list) 
+
+```
+
+Do lab and wild mice have different functional profiles across age? 
+
+```{r write_biom_files}
+
+age_sequences <- readRDS("GM_age_samples_sequences.rds")
+age_sequences <- t(data.frame(age_sequences))
+age_sequences <- as.list(colnames(age_sequences))
+library(seqinr)
+#write.fasta(sequences = age_sequences, names = age_sequences, file.out = "GM_age_samples_seqs.fna") # FASTA header is same as sequence, i.e. using sequences as otu id's.
+
+# Make a biom formatted otu table
+age <- readRDS("phy.rds")
+otu_table(age) <- t(otu_table(age))
+library(biomformat)
+b2 <- 
+    make_biom(
+        data = otu_table(age)
+    )
+write_biom(b2, "age_relOtu.biom")
+
+```
+
+# Install 
+$ conda create -n picrust2 -c bioconda -c conda-forge picrust2=2.5.0
+
+# Activate
+$ conda activate picrust2
+
+# Run PICrust
+$ picrust2_pipeline.py -s path/GM_age_samples_seqs.fna -i path/age_relOtu.biom -o path/NEW_GM_picrust2_out_pipeline -p 1 
+
+# Plot MetaCyc functional profiles as a heatmap
+
+```{r MetaCyc_heatmap}
+
+# metacyc pathways:
+pathways <- read.table(file = "NEW_GM_picrust2_out_pipeline/pathways_out/path_abun_unstrat.tsv.gz", sep = '\t', header = TRUE) # 509 samples, 293 pathways. Make sure to include only samples from the final dataset for this paper.
+library(textshape)
+pathways <- column_to_rownames(pathways, 'pathway')
+age <- readRDS("phy.rds") # 472 samples
+df <- data.frame(sample_data(age))
+ids <- df$IMR_code # 472
+existing_columns <- intersect(ids, colnames(pathways)) 
+pathways <- pathways %>% select(all_of(existing_columns)) 
+
+#descriptions_key <- pathways[,c(1,2)]
+#descriptions_key$description <- substring(descriptions_key$description, 1,100)
+#rownames(pathways) <- pathways[,c(1)]
+#pathways <- pathways[,c(2:509)]
+savepath <- pathways
+library(funrar)
+pathways <- t(pathways)
+pathways_rel <- make_relative(pathways)
+
+# Heatmap
+age <- readRDS("phy.rds")
+sd <- as.data.frame(sample_data(age))
+meta <- sd[,c("Source", "Body_mass_g", "chrono_age")]
+meta$Sample_ID <- rownames(meta)
+meta <- meta[,c(4,1:3)]
+meta$age <- meta$Body_mass_g
+meta$Sample_ID <- str_sub(meta$Sample_ID, start = 7)
+meta$id_age <- paste(meta$age, meta$Sample_ID, sep="          ")
+meta$Sample_ID <- rownames(meta)
+key <- data.frame(meta[,c("Sample_ID", "id_age", "age")])
+key2 <- data.frame(meta[,c("Sample_ID", "id_age", "age", "Source")])
+
+lab <- meta[which(meta$Source=="Lab"),]
+wild <- meta[which(meta$Source=="Wild"),]
+mat <- data.frame(pathways_rel)
+mat$Sample_ID <- rownames(mat)
+
+# Heatmap using mean abundances per each unit of age
+both <- merge(mat, key2, by="Sample_ID", all.x=TRUE, all.y=FALSE)
+
+# Save source data
+source <- both
+df <- source[,c(1,297,296,2:294)]
+names(df)[names(df) == "age"] <- "Body_mass_g"
+saveRDS(df, "Source_data_Assembly_FIG4.rds")
+
+# Continue
+both$age_rounded <- round(both$age, 0)
+table(both$Source, both$age_rounded) # wild: 5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28
+both$age_rounded[both$Source=="Wild" & both$age_rounded==5]  <- "a"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==6]  <- "b"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==7]  <- "c"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==8]  <- "d"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==9]  <- "e"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==10]  <- "f"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==11]  <-"g"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==12]  <- "h"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==13]  <- "i"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==14]  <-"j"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==15]  <- "k"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==16]  <-"l"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==17]  <-"m"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==18]  <-"n"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==19]  <-"o"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==20]  <-"p"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==21]  <-"q"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==22]  <-"r"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==23]  <-"s"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==24]  <-"t"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==25]  <-"u"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==26]  <-"w"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==27]  <-"x"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==28]  <-"y"
+
+colnames(both)  
+both <- both[,c(2:294, 298)]
+both <- both[complete.cases(both$age_rounded),]
+both1 <- as.data.table(both)[, lapply(.SD, mean), by = .(x = tolower(age_rounded))] # 37
+both1 <- both1[order(both1$x),] 
+rownames(both1) <- both1$x # don't understand why rownmaes are not changed. they are in increasing order these ages:"12" "14" "16" "17" "20" "22" "23" "25" "27" "34" "40" "48" "64" "7"  "81" "9"  "a"  "b"  "c"  "d"  "e"  "f"  "g"  "h"  "i"  "j"  "k"  "l"  "m"  "n"  "o"  "p"  "q"  "r"  "s"  "t"  "u" 
+l <- both1[1:13, ]
+l$x <- as.numeric(as.character(l$x))
+l <- l[order(l$x),]
+w <- both1[14:37, ]
+both1 <- rbind(l, w) # 37 - rows 1-13 are lab mice in increasing body mass and then 14-37 are wild mice with increasing body mass
+both2 <- both1[,c(2:294)]
+both2 <- as.matrix(both2)
+library(RColorBrewer)
+heatmap(both2, Rowv=NA, labCol = FALSE, col = colorRampPalette(brewer.pal(8,"YlOrRd"))(10))
+
+check <- data.frame(both2)
+flattened_vector <- unlist(check)
+smallest_value <- min(flattened_vector) # 0
+largest_value <- max(flattened_vector) # metacyc: 0.265
+
+```
+
+Are there age-related anaerobe-specific and aerobe-specific functional pathway patterns? Here need to use Kegg Orthologs as only those are linked to ASVs in the current PICRUSt2 output, and so only by using those I can link functional profiling data to aerotolerance.
+
+```{r}
+
+# Assign aerotolerance to taxa:
+
+pheno <- read.csv("Assembly_chapter_bacterial_phenotypes_FINISHED.csv") # this file has phenotypic data of taxa included in this age dataset
+age <- readRDS("phy.rds")
+
+pseq <- age
+df <- as.data.frame(lapply(sample_data(pseq),function (y) if(class(y)!="factor" ) as.factor(y) else y),stringsAsFactors=T)
+row.names(df) <- sample_names(pseq)
+sample_data(pseq) <- sample_data(df)
+pseq_loc <- merge_samples(pseq, "Source") 
+comp <- microbiome::transform(pseq, "compositional")
+genus <- comp %>% tax_glom(taxrank = "Genus") %>% psmelt()
+#genus_min <- genus[c("Source", "Body_mass_g", "chrono_age", "Abundance", "Family", "Genus")]
+#genus_min$Abundance <- round(genus_min$Abundance, digits=4)
+genus$fam_gen <- paste(genus$Family, genus$Genus, sep="-") 
+unique(genus$fam_gen) # 574
+
+pheno$fam_gen <- paste(pheno$Family, pheno$Genus, sep="-") # 651 (includes spike in taxa, n=2)
+age_pheno <- merge(genus, pheno, by="fam_gen", all.x=TRUE, all.y=FALSE)
+
+# Add aerotolerance at family level for those that don't have it at genus level
+famaero <- read.csv("old/Unknown_genus_families_wild_aero.csv")
+age_pheno$Aerotolerance_cat <- ifelse(is.na(age_pheno$Aerotolerance_cat), "unknown", age_pheno$Aerotolerance_cat)
+unique(age_pheno$Aerotolerance_cat) # "anaerobe"     "aerotolerant" "unknown"    
+famaero <- famaero[,c("Family", "Aerotolerance_cat")]
+colnames(famaero) <- c("famfam", "aeroaero")
+age_pheno$Aerotolerance_cat[age_pheno$Aerotolerance_cat=="Unknown"] <- "unknown"
+age_pheno <- merge(age_pheno, famaero, by.x="Family.x", by.y="famfam", all.x=TRUE, all.y=FALSE)
+table(age_pheno$Aerotolerance_cat) #
+age_pheno$Aerotolerance_cat[age_pheno$Aerotolerance_cat=="unknown"] <- NA
+age_pheno$Aerotolerance_cat <- ifelse(is.na(age_pheno$Aerotolerance_cat), age_pheno$aeroaero, age_pheno$Aerotolerance_cat)
+table(age_pheno$Aerotolerance_cat) #  
+age_pheno$Aerotolerance_cat[age_pheno$Aerotolerance_cat=="mixed"] <- "unknown"
+age_pheno$Aerotolerance_cat[age_pheno$Aerotolerance_cat=="Unknown"] <- "unknown"
+age_pheno$Aerotolerance_cat[age_pheno$Aerotolerance_cat=="nonaerotolerant"] <- "anaerobe"
+age_pheno$Aerotolerance_cat[age_pheno$Aerotolerance_cat=="nonaeotolerant"] <- "anaerobe"
+table(age_pheno$Aerotolerance_cat) #
+
+pheno <- age_pheno[,c("OTU", "fam_gen", "Aerotolerance_cat")]
+pheno <- pheno[!duplicated(pheno),] # 650
+pheno <- pheno[,c("fam_gen", "Aerotolerance_cat")]
+
+taxa <- data.frame(tax_table(age))
+taxa$ASV <- rownames(taxa)
+taxa <- taxa[,c("Family", "Genus", "ASV")]
+taxa <- taxa[!duplicated(taxa),] # 8384
+taxa$fam_gen <- paste(taxa$Family, taxa$Genus, sep="-")
+
+taxa_pheno <- merge(taxa, pheno, by="fam_gen")
+taxa_pheno <- taxa_pheno[!duplicated(taxa_pheno),] # 8384
+table(taxa_pheno$Aerotolerance_cat)
+
+pheno_minimal <- taxa_pheno[,c("ASV", "Aerotolerance_cat")]
+
+# Link ASV and aerotolerance to functional pathway data:
+
+pathways <- read.table(file = "NEW_GM_picrust2_out_pipeline/KO_predicted.tsv.gz", sep = '\t', header = TRUE)
+library(textshape)
+pathways <- column_to_rownames(pathways, 'sequence')
+pathways[pathways>0] <- 1
+pathways$ASV <- rownames(pathways)
+library(tidyr)
+pathways_long <- pivot_longer(
+  pathways,
+  cols = -ASV,         # Exclude the ASV column
+  names_to = "KO",     # New column name for former column names
+  values_to = "Present" # New column name for former values
+)
+
+combined <- merge(pathways_long, pheno_minimal, by="ASV", all=T) # 143827608
+write.csv(combined, "KO_ASV_aerotolerance.csv")
+
+# Only keep rows where KO is present in corresponding ASV
+combined <- read.csv("KO_ASV_aerotolerance.csv")
+info <- combined[which(combined$Present==1),] # 14592304
+info <- info[!duplicated(info),] # 14592304
+unique(info$Present)
+
+# Remove ASVs now that KOs have been linked to aerotolerance
+info <- info[,c("KO", "Aerotolerance_cat")]
+info <- info[!duplicated(info),] # 24009
+info <- na.omit(info) # 17054
+aerotolerant_KO <- info[which(info$Aerotolerance_cat=="aerotolerant"),]
+anaerobic_KO <- info[which(info$Aerotolerance_cat=="anaerobe"),]
+`%notin%` <- Negate(`%in%`)
+only_aerotolererant <- aerotolerant_KO[which(aerotolerant_KO$KO%notin%anaerobic_KO$KO),] # 2299
+only_anaerobic <- anaerobic_KO[which(anaerobic_KO$KO%notin%aerotolerant_KO$KO),] # 76
+both <- aerotolerant_KO[which(aerotolerant_KO$KO%in%anaerobic_KO$KO),] # 4759
+info$Aerotolerance_info <- "Both"
+info$Aerotolerance_info[info$KO%in%only_aerotolererant$KO] <- "Aerotolerant only" 
+info$Aerotolerance_info[info$KO%in%only_anaerobic$KO] <- "Anaerobic only" 
+info <- info[,c("KO", "Aerotolerance_info")]
+info <- info[!duplicated(info),] # 7158
+
+# Now link aerotolerance-informed KO data to functional data (KO)
+
+pathways <- read.table(file = "NEW_GM_picrust2_out_pipeline/KO_metagenome_out/pred_metagenome_unstrat.tsv.gz", sep = '\t', header = TRUE) # 361 samples, 307 pathways
+pathways_informed <- merge(pathways, info, by.x="function.", by.y="KO")
+write.csv(pathways_informed, "KO_pathwaysinformed.csv")
+pathways_informed <- pathways_informed[,c(1,511,2:510)]
+pathways_informed$KO_aero <- paste(pathways_informed$function., pathways_informed$Aerotolerance_info, sep="-")
+rownames(pathways_informed) <- pathways_informed[,c(512)]
+pathways_informed <- pathways_informed[,c(3:511)]
+savepath <- pathways_informed
+library(funrar)
+pathways_informed <- t(pathways_informed)
+pathways_rel <- make_relative(pathways_informed)
+
+# heatmapping in between
+age <- readRDS("phy.rds")
+sd <- as.data.frame(sample_data(age))
+meta <- sd[,c("Source", "Body_mass_g", "chrono_age")]
+meta$Sample_ID <- rownames(meta)
+meta <- meta[,c(4,1:3)]
+meta$age <- meta$Body_mass_g
+meta$Sample_ID <- str_sub(meta$Sample_ID, start = 7)
+meta$id_age <- paste(meta$age, meta$Sample_ID, sep="          ")
+meta$Sample_ID <- rownames(meta)
+key <- data.frame(meta[,c("Sample_ID", "id_age", "age")])
+key2 <- data.frame(meta[,c("Sample_ID", "id_age", "age", "Source")])
+
+lab <- meta[which(meta$Source=="Lab"),]
+wild <- meta[which(meta$Source=="Wild"),]
+mat <- data.frame(pathways_rel)
+mat$Sample_ID <- rownames(mat)
+
+# heatmap using mean abundances per each unit of age
+both <- merge(mat, key2, by="Sample_ID", all.x=TRUE, all.y=FALSE)
+both$age_rounded <- round(both$age, 0)
+table(both$Source, both$age_rounded) # wild: 5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28
+both$age_rounded[both$Source=="Wild" & both$age_rounded==5]  <- "a"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==6]  <- "b"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==7]  <- "c"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==8]  <- "d"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==9]  <- "e"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==10]  <- "f"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==11]  <-"g"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==12]  <- "h"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==13]  <- "i"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==14]  <-"j"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==15]  <- "k"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==16]  <-"l"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==17]  <-"m"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==18]  <-"n"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==19]  <-"o"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==20]  <-"p"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==21]  <-"q"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==22]  <-"r"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==23]  <-"s"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==24]  <-"t"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==25]  <-"u"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==26]  <-"w"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==27]  <-"x"
+both$age_rounded[both$Source=="Wild" & both$age_rounded==28]  <-"y"
+
+colnames(both)  
+#both <- both[,c(2:294, 298)] # with metacyc
+both <- both[,c(2:4059,4063)]
+both <- both[complete.cases(both$age_rounded),]
+both1 <- as.data.table(both)[, lapply(.SD, mean), by = .(x = tolower(age_rounded))] # 37
+both1 <- both1[order(both1$x),] 
+rownames(both1) <- both1$x # don't understand why rownmaes are not changed. they are in increasing order these ages:"12" "14" "16" "17" "20" "22" "23" "25" "27" "34" "40" "48" "64" "7"  "81" "9"  "a"  "b"  "c"  "d"  "e"  "f"  "g"  "h"  "i"  "j"  "k"  "l"  "m"  "n"  "o"  "p"  "q"  "r"  "s"  "t"  "u" 
+l <- both1[1:13, ]
+l$x <- as.numeric(as.character(l$x))
+l <- l[order(l$x),]
+w <- both1[14:37, ]
+both1 <- rbind(l, w) # 37 - rows 1-13 are lab mice in increasing body mass and then 14-37 are wild mice with increasing body mass
+both2 <- both1[,c(2:293)]
+both2 <- as.matrix(both2)
+heatmap(both2, Rowv=NA, labCol = FALSE, col = colorRampPalette(brewer.pal(8,"YlOrRd"))(10))
+
+check <- data.frame(both2)
+flattened_vector <- unlist(check)
+smallest_value <- min(flattened_vector) # 0
+largest_value <- max(flattened_vector) # KO: 0.0051
+
+# Line plot with relative abundance of aerobe-unique and anaerobe-unique functions
+pathways_rel_df <- data.frame(pathways_rel)
+pathways_rel_df <- data.frame(t(pathways_rel_df))
+pathways_rel_df$aerot <- rownames(pathways_rel_df)
+
+fAero_long <- pivot_longer(
+  pathways_rel_df,
+  cols = -aerot,             # Exclude the KO column
+  names_to = "ID",        # New column name for former column names
+  values_to = "Relative_abundance"  # New column name for former values
+)
+
+fAero_long$aerot <- gsub("\\.", "-", fAero_long$aerot)
+fAero_long <- separate(fAero_long, col = aerot, into = c("KO", "Aerotolerance"), sep = "-")
+fAero_long$id2 <- paste(fAero_long$ID, fAero_long$Aerotolerance, sep="-")
+fAero <- fAero_long[,c("id2", "Relative_abundance")]
+library(dplyr)
+fAero2 <- fAero %>%
+  group_by(id2) %>%
+  summarise(combAbun = sum(Relative_abundance, na.rm = TRUE))
+fAero2 <- separate(fAero2, col = id2, into = c("Sample_ID", "Aerotolerance"), sep = "-")
+
+fAero_key <- merge(fAero2, key2, by="Sample_ID")
+length(unique(fAero_key$Sample_ID)) # 470
+names(fAero_key)[names(fAero_key) == "age"] <- "Body_mass_g"
+
+# Plot:
+colors <- c( "deepskyblue3", "firebrick1", "dimgrey")
+
+fAero_key$Body_mass_g <- as.numeric(as.character(fAero_key$Body_mass_g))
+
+wild <- fAero_key[which(fAero_key$Source=="Wild"),]
+lab <- fAero_key[which(fAero_key$Source=="Lab"),]
+  
+library(geomtextpath)
+p <- ggplot(wild, aes(x=Body_mass_g, y=combAbun, label=Aerotolerance, fill=Aerotolerance, colour=Aerotolerance, group = interaction(Aerotolerance, Aerotolerance))) +
+            stat_smooth(method=loess, size=0, span=.6,aes (color=Aerotolerance), se=TRUE) + 
+            geom_textsmooth(method="loess", size=8, hjust=0.85, linewidth=1.5, aes(color=Aerotolerance, fontface=2), se=FALSE) +
+            scale_fill_manual(values = colors) +
+            theme_minimal() +
+            ylab(c("Relative abundance")) +
+            xlab(c("Body mass (g)")) +
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),axis.line = element_line(size = 0.5),
+axis.ticks = element_line(size = 0.5)
+) +
+            labs(title = "") +
+            theme(legend.position = "none", axis.title = element_text(size = 20), axis.text.x = element_text(size = 15), axis.text.y = element_text(size=15)) + coord_cartesian(ylim = c(0, 1)) +
+       coord_cartesian(ylim = c(0, 1))  + scale_x_continuous(breaks=c(5,10,15, 20, 25,30))
+plot <- p + scale_colour_manual(values = colors)
+p <- plot + theme(rect = element_rect(fill = "transparent"))
+
+```
+
+Plot functional pathways with largest fold-change across juvenile and adult mice within each system against body mass.
+
+```{r}
+
+# Plot top pathways with largest fold-change between adult and juvenile samples against body mass
+pathways <- read.table(file = "NEW_GM_picrust2_out_pipeline/pathways_out/path_abun_unstrat.tsv.gz", sep = '\t', header = TRUE)
+colnames(pathways)
+library(tidyr)
+path <- data.frame(gather(pathways, Sample_ID, abundance, Sample1:Sample1573, factor_key=TRUE))
+
+age <- readRDS("phy.rds")
+sd <- as.data.frame(sample_data(age))
+meta <- data.frame(sd[,c("IMR_code", "Source", "Body_mass_g", "Age", "Reprod")])
+
+path2 <- merge(path, meta, by.x="Sample_ID", by.y="IMR_code")
+
+# Assign juvenile vs adult as in our other manuscripts: "reproductively inactive mice weighing ≤15.0g were ranked as juveniles, mice weighing ≥20.0g were ranked as adults regardless of reproductive state, and mice between these two categories (mice weighing 15.1–20.0g as well as reproductively active mice weighing ≤15.0g) were ranked as sub-adults."
+
+unique(path2$Reprod)
+active <-  path2 %>% filter(str_detect(Reprod, "Pregnant|PREG|Pregnant?|PREG?|Nipples|NIPP|Perforate|PERF|Lactating|Testis large|TL|Testis small|TS"))
+path2$act <- FALSE
+path2$act[path2$Sample_ID%in%active$Sample_ID] <- TRUE
+table(path2$Reprod, path2$act)
+path2$new_age[path2$Body_mass_g>20] <- "Adult"
+path2$new_age[path2$Body_mass_g<=15 & path2$act==FALSE] <- "Juvenile"
+path2$new_age[path2$Body_mass_g<=15 & path2$act==TRUE] <- "Sub-adult"
+path2$new_age[path2$Body_mass_g>15 & path2$Body_mass_g<=20] <- "Sub-adult"
+
+# Select minimal columns to measure mean relative abundance for each functional pathway in juvenile vs adult mice. Leaving sub-adults out.
+colnames(path2)
+#minimal <- path2[,c("function.", "abundance", "Source", "new_age")]
+minimal <- path2[,c("pathway", "abundance", "Source", "new_age")]
+minimal <- minimal[which(minimal$new_age!="Sub-adult"),]
+
+# Function to calculate fold-change between JUV and ADULT
+calculate_fold_change <- function(df) {
+  df %>%
+    # Group by function. and Source
+    group_by(pathway, Source) %>%
+    # Summarize to get abundance means for Adult and Juvenile
+    summarise(
+      abundance_adult = mean(abundance[new_age == "Adult"], na.rm = TRUE),
+      abundance_juvenile = mean(abundance[new_age == "Juvenile"], na.rm = TRUE),
+      fold_change = abundance_adult / abundance_juvenile
+    ) %>%
+    # Remove rows where abundance_juvenile is zero to avoid division by zero
+    filter(abundance_juvenile != 0)
+}
+
+# Calculate fold-change separately for each Source
+fold_change_wild <- minimal %>%
+  filter(Source == "Wild") %>%
+  calculate_fold_change()
+wild_top_10 <- fold_change_wild[order(-fold_change_wild$fold_change), ][1:10, ]
+
+fold_change_lab <- minimal %>%
+  filter(Source == "Lab") %>%
+  calculate_fold_change()
+lab_top_10 <- fold_change_lab[order(-fold_change_lab$fold_change), ][1:10, ]
+
+# Select picrust data according to fold-change
+path_wild <- path2[which(path2$Source=="Wild"),]
+path_wild <- path_wild[which(path_wild$pathway%in%wild_top_10$pathway),]
+wild_save1 <- path_wild
+
+path_lab <- path2[which(path2$Source=="Lab"),]
+path_lab <- path_lab[which(path_lab$pathway%in%lab_top_10$pathway),]
+lab_save1 <- path_lab
+
+# Are any pathways in the top10 for both lab and wild?
+shared <- wild_top_10[which(wild_top_10$pathway%in%lab_top_10$pathway),] # 3
+
+library(geomtextpath)
+# Combine both datasets (lab and wild) into one
+combined_path <- rbind(path_lab, path_wild)
+
+# List of pathways with unique colors
+unique_pathways <- c("ASPASN-PWY", "DTDPRHAMSYN-PWY", "GLUTORN-PWY", "HISTSYN-PWY", 
+                     "NONMEVIPP-PWY", "NONOXIPENT-PWY", "OANTIGEN-PWY", "PWY-7560", 
+                     "SER-GLYSYN-PWY", "TEICHOICACID-PWY", "PWY-3781", "PWY-5022", 
+                     "PWY-6263", "PWY-6545", "PWY-5971", "PWY-7237", "PWY-7456", 
+                     "PWY-7371", "P108-PWY", "PWY-7374", "CODH-PWY", "P162-PWY", 
+                     "P164-PWY", "PWY-5505", "PWY-5676", "PWY-7013", "TYRFUMCAT-PWY", 
+                     "PWY-6590", "PWY-6749", "PWY-7332", "PWY-5177", "CENTFERM-PWY")
+
+# Assign a unique color to each pathway
+set.seed(8765)
+colors <- c(brewer.pal(9, "Set1"), brewer.pal(8, "Dark2"), brewer.pal(12, "Pastel1"))
+colors <- colors[1:length(unique_pathways)]  # Select the number of colors needed
+names(colors) <- unique_pathways
+
+# Plot using facet_wrap to create side-by-side plots with dashed lines for specific pathways
+p <- ggplot(combined_path, aes(x = Body_mass_g, y = abundance, label = pathway, 
+                               fill = pathway, colour = pathway, 
+                               group = pathway)) +
+  stat_smooth(method = "loess", size = 0, span = 0.6, aes(color = pathway), se = FALSE) + 
+  geom_smooth(method = "loess", linewidth = .8, 
+              aes(color = pathway, linetype = ifelse(pathway %in% c("PWY-5676", "PWY-6545", "PWY-7013", "PWY-5022", "PWY-7371", "PWY-7374"), "solid", "dashed")), 
+              se = FALSE) +
+  theme_minimal() +
+  ylab("Relative abundance") +
+  xlab("Body mass (g)") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        axis.line = element_line(size = 0.5), axis.ticks = element_line(size = 0.5)) +
+  labs(title = "") +
+  theme(legend.position = "none", axis.title = element_text(size = 20), 
+        axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 15)) + 
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) + 
+  ylim(0, 0.2) +
+  facet_wrap(~ Source) +  # Facet by Source to create side-by-side plots
+  scale_color_manual(values = colors) 
+
+### SECOND APPROACH: BODY WEIGHT CUT OFF
+
+# Same but now use body mass as a cutoff threshold, informed by the heatmap. Use <=7g and >7g as cutoff
+minimal <- path2[,c("pathway", "abundance", "Source", "Body_mass_g")]
+minimal$new_age[minimal$Body_mass_g>20] <- "Adult"
+minimal$new_age[minimal$Body_mass_g<=7] <- "Juvenile"
+minimal <- minimal[which(minimal$new_age=="Adult" | minimal$new_age=="Juvenile"),]
+
+# Function to calculate fold-change between JUV and ADULT
+calculate_fold_change <- function(df) {
+  df %>%
+    # Group by function. and Source
+    group_by(pathway, Source) %>%
+    # Summarize to get abundance means for Adult and Juvenile
+    summarise(
+      abundance_adult = mean(abundance[new_age == "Adult"], na.rm = TRUE),
+      abundance_juvenile = mean(abundance[new_age == "Juvenile"], na.rm = TRUE),
+      fold_change = abundance_adult / abundance_juvenile
+    ) %>%
+    # Remove rows where abundance_juvenile is zero to avoid division by zero
+    filter(abundance_juvenile != 0)
+}
+
+# Calculate fold-change separately for each Source
+fold_change_wild <- minimal %>%
+  filter(Source == "Wild") %>%
+  calculate_fold_change()
+wild_top_10 <- fold_change_wild[order(-fold_change_wild$fold_change), ][1:10, ]
+
+fold_change_lab <- minimal %>%
+  filter(Source == "Lab") %>%
+  calculate_fold_change()
+lab_top_10 <- fold_change_lab[order(-fold_change_lab$fold_change), ][1:10, ]
+
+# Select picrust data according to fold-change
+path_wild <- path2[which(path2$Source=="Wild"),]
+path_wild <- path_wild[which(path_wild$pathway%in%wild_top_10$pathway),]
+
+path_lab <- path2[which(path2$Source=="Lab"),]
+path_lab <- path_lab[which(path_lab$pathway%in%lab_top_10$pathway),]
+
+# Are any pathways in the top10 for both lab and wild?
+shared <- wild_top_10[which(wild_top_10$pathway%in%lab_top_10$pathway),] # 0
+
+# Which pathways are found in lab and wild mice in either approaches
+www <- rbind(wild_save1, path_wild)
+lll <- rbind(lab_save1, path_lab)
+final_shared <- www[which(www$pathway%in%lll$pathway),]
+unique(final_shared$pathway) # "PWY-5676" "PWY-6545" "PWY-7013" "PWY-7371" "PWY-7374"
+
+# Gather data from lab and wild based on top pathways in lab:
+based_on_lab <- path2[which(path2$pathway%in%lab_top_10$pathway),]
+unique(based_on_lab$pathway) # 10 - correct
+
+# Gather data from lab and wild based on top pathways in wild:
+based_on_wild <- path2[which(path2$pathway%in%wild_top_10$pathway),]
+unique(based_on_wild$pathway) # 10 - correct
+
+# Combine into one dataset
+based_on_lab$based_on <- "Top 10 pathways in lab"
+based_on_wild$based_on <- "Top 10 pathways in wild"
+all_combined <- rbind(based_on_lab, based_on_wild)
+
+library(geomtextpath)
+
+colors <- c(
+  "#00008B",  # Dark Blue
+  "#32CD32",  # Lime Green
+  "#FF66B2",  # Pink
+  "#40E0D0",  # Turquoise
+  "yellow",  # Orange Red
+  "#1E90FF",  # Dodger Blue
+  "#000000",  # Black
+  "#FF8C00",  # Dark Orange
+  "#8A2BE2",  # Blue Violet
+  "#DC143C"   # Crimson
+)
+
+# Plot using facet_wrap to create side-by-side plots.
+p <- ggplot(based_on_lab, aes(x = Body_mass_g, y = abundance, colour = pathway, 
+                               group = pathway)) +
+  stat_smooth(method = "loess", size = 0, span = 0.6, se = FALSE) + 
+  geom_smooth(method = "loess", linewidth = .8, se = FALSE) +
+  theme_minimal() +
+  ylab("Relative abundance (%)") +
+  xlab("Body mass (g)") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        axis.line = element_line(size = 0.5), axis.ticks = element_line(size = 0.5)) +
+  labs(title = "") +
+  theme(axis.title = element_text(size = 20), 
+        axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 15), title = element_text(size = 15),
+        strip.text = element_text(size = 15)) + 
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) + 
+  facet_grid(~ Source) +  
+  scale_color_manual(name = "MetaCyc pathway", values = colors)
+
+p <- ggplot(based_on_wild, aes(x = Body_mass_g, y = abundance, colour = pathway, 
+                               group = pathway)) +
+  stat_smooth(method = "loess", size = 0, span = 0.6, se = FALSE) + 
+  geom_smooth(method = "loess", linewidth = .8, se = FALSE) +
+  theme_minimal() +
+  ylab("Relative abundance (%)") +
+  xlab("Body mass (g)") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        axis.line = element_line(size = 0.5), axis.ticks = element_line(size = 0.5)) +
+  labs(title = "") +
+  theme(axis.title = element_text(size = 20), 
+        axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 15), title = element_text(size = 15),
+        strip.text = element_text(size = 15)) + 
+  scale_x_continuous(breaks = c(5, 10, 15, 20, 25, 30)) + 
+  facet_grid(~ Source) +  
+  scale_color_manual(name = "MetaCyc pathway", values = colors)
+
+```
